@@ -23,7 +23,10 @@ from typing import Any
 import deepspeed
 import torch
 import torch.distributed as dist
-from deepspeed.ops.adam import FusedAdam
+try:
+    from deepspeed.ops.adam import FusedAdam
+except ImportError:
+    FusedAdam = None
 from diffusers import StableDiffusionPipeline
 from diffusers.loaders import LoraLoaderMixin
 from diffusers.utils import convert_state_dict_to_diffusers
@@ -235,18 +238,36 @@ class SupervisedTrainerBase:
         """Initialize DeepSpeed engines."""
         num_update_steps_per_epoch = (
             len(self.train_dataloader) + self.cfgs.train_cfgs.gradient_accumulation_steps - 1
-        ) // self.cfgs.train_cfgs.gradient_accumulation_steps
-        total_training_steps = self.cfgs.train_cfgs.epochs * num_update_steps_per_epoch
+        ) // self.cfgs.train_cfgs.gradient_accumulation_steps  # 1个epoches中参数更新次数（steps）、一个epoches中多少个batch、ceil
+        total_training_steps = self.cfgs.train_cfgs.epochs * num_update_steps_per_epoch  # epoch * per epoch update times
 
         optimizer_grouped_parameters = get_optimizer_grouped_parameters(
             self.model,
             self.cfgs.train_cfgs.weight_decay,
-        )
-        optimizer = FusedAdam(
-            optimizer_grouped_parameters,
-            lr=self.cfgs.train_cfgs.learning_rate,
-            betas=self.cfgs.train_cfgs.adam_betas,
-        )
+        )  # 需要权重衰减的参数：weights（权重矩阵） 不需要权重衰减的参数：偏置项（bias）和归一化层的权重 ---> 转为优化器创建
+        # 尝试使用 FusedAdam，如果不可用则回退到标准 Adam
+        if FusedAdam is not None:
+            try:
+                optimizer = FusedAdam(  # FusedAdam 为 Adam 优化器的高性能版本，主要用于加速深度学习模型训练，
+                    optimizer_grouped_parameters,
+                    lr=self.cfgs.train_cfgs.learning_rate,
+                    betas=self.cfgs.train_cfgs.adam_betas,
+                )
+            except RuntimeError as e:
+                print(f"FusedAdam 构建失败，回退到标准 Adam: {e}")
+                optimizer = torch.optim.Adam(
+                    optimizer_grouped_parameters,
+                    lr=self.cfgs.train_cfgs.learning_rate,
+                    betas=self.cfgs.train_cfgs.adam_betas,
+                    eps=self.cfgs.train_cfgs.adam_epsilon,
+                )
+        else:
+            optimizer = torch.optim.Adam(
+                optimizer_grouped_parameters,
+                lr=self.cfgs.train_cfgs.learning_rate,
+                betas=self.cfgs.train_cfgs.adam_betas,
+                eps=self.cfgs.train_cfgs.adam_epsilon,
+            )
 
         num_warmup_steps = int(self.cfgs.train_cfgs.lr_warmup_ratio * total_training_steps)
         lr_scheduler = get_scheduler(

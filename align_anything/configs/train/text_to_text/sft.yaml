@@ -135,9 +135,9 @@ bnb_cfgs:
   # Whether to use 8-bit quantization
   load_in_8bit: False
   # The quantization type for 4-bit quantization
-  bnb_4bit_quant_type: nf4
+  bnb_4bit_quant_type: nf4  # fp4：传统4-bit浮点量化； nf4（NormalFloat4）：更先进的一种量化方式（QLoRA论文推荐)，接近原始分布，精度更好
   # Whether to use double quantization
-  bnb_4bit_use_double_quant: True
+  bnb_4bit_use_double_quant: True  # 先将权重量化到 8bit， 再对 8-bit quantization constants做 4-bit量化
   # The compute dtype for 4-bit quantization
   bnb_4bit_compute_dtype: float16
 # Customized special tokens

@@ -96,6 +96,7 @@ MODEL_MAPPING_NAMES: OrderedDict[str, str] = OrderedDict(
         ('gemma3', 'AccustomedGemma3Model'),
         ('opt', 'AccustomedOPTModel'),
         ('qwen2', 'AccustomedQwen2Model'),
+        ('qwen2_5_omni', 'AccustomedQwen2_5_OmniModel'),
     ],
 )
 

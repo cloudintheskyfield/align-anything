@@ -20,6 +20,8 @@ import os
 import sys
 from typing import Any
 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
+
 import deepspeed
 import torch
 import torch.distributed as dist
@@ -51,7 +53,7 @@ class SupervisedTrainer(SupervisedTrainerBase):
         self.infer_batch = lambda batch: {k: v for k, v in batch.items() if k != 'meta_info'}
 
         self.init_check()
-        dist.barrier()
+        dist.barrier()  # 让所有进程（rank）在此处同步，等彼此执行到这一行代码之后，才会继续往下（关键步骤对齐）
         self.init_models()
         if hasattr(self.model, 'infer_batch'):
             self.infer_batch = self.model.infer_batch
@@ -132,16 +134,20 @@ class SupervisedTrainer(SupervisedTrainerBase):
 
         for epoch in range(int(remain_epoch)):
             self.model.train()
-            progress_bar.set_description(
-                f'Resuming from checkpoint {epoch + 1}/{self.cfgs.train_cfgs.epochs} epoch '
-            )
+            # progress_bar.set_description(
+            #     f'Resuming from checkpoint {epoch + 1}/{self.cfgs.train_cfgs.epochs} epoch '
+            # )
+            if self.cfgs.train_cfgs.load_checkpoint:
+                progress_bar.set_description(
+                    f'Resuming from checkpoint {epoch + 1}/{self.cfgs.train_cfgs.epochs} epoch'
+                )
 
             for batch_idx, batch in enumerate(self.train_dataloader):
                 if epoch == 0 and batch_idx < start_batch_idx:
                     continue
 
                 info = self.train_step(batch)
-                torch_gc()
+                torch_gc()  # python 自带垃圾回收机制 （gc：Garbage Collector）
 
                 self.global_step += 1
                 progress_bar.set_description(

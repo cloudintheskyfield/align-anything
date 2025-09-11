@@ -67,17 +67,18 @@ data_cfgs:
   # Whether to use multi datasets
   load_multi_datasets: False
   # Datasets to use for training
-  train_datasets: null
+#  train_datasets: PKU-Alignment/Align-Anything-TI2T-Instruction-100K
+  train_datasets: parquet
   # The format template for training
-  train_template: null
+  train_template: Qwen_Omni_TI2T
   # The total number for training
   train_size: null
   # The split of train datasets
-  train_split: null
+  train_split: train
   # The name of training datasets
   train_name: null
   # The training data files to be used
-  train_data_files: null
+  train_data_files: '../../../data/train-00000-of-00013.parquet'
   # The optional arguments for loading training datasets
   train_optional_args: []
   # Datasets to use for evaluation
@@ -99,13 +100,13 @@ data_cfgs:
 # The logging configurations
 logger_cfgs:
   # Type of logging to use, choosing from [wandb, tensorboard]
-  log_type: wandb
+  log_type: tensorboard
   # Project name for logging
   log_project: align-anything
   # Run name for logging
   log_run_name: sft
   # Output directory name
-  output_dir: null
+  output_dir: ../../outputs
   # The directory to cache the downloaded model
   cache_dir: null
   # The interval of saving models
@@ -113,7 +114,7 @@ logger_cfgs:
 # The model configurations
 model_cfgs:
   # Pretrained model name or path
-  model_name_or_path: null
+  model_name_or_path: /mnt/data3/nlp/ws/model/Qwen2/Qwen/Qwen2.5-Omni-7B
   # Whether to trust remote code
   trust_remote_code: True
   # The max token length

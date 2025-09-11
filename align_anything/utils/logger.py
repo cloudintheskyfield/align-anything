@@ -66,7 +66,7 @@ class Logger:
 
     _instance: ClassVar[Logger] = None  # singleton pattern
     writer: tensorboard.SummaryWriter | None
-    wandb: wandb.sdk.wandb_run.Run | None
+    # wandb: wandb.sdk.wandb_run.Run | None
 
     def __new__(
         cls,

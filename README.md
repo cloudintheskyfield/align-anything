@@ -41,10 +41,10 @@
 Align-Anything aims to align any modality large models (any-to-any models) with human intentions and values. 
 
 - **Highly Modular Framework** allowing users to easily modify and customize the code for different tasks (see [framework design](https://align-anything.readthedocs.io/)).
-- **Various Modality Model Fine-Tuning** for diverse multi-modal (image/video/audio) models (see [scripts](./scripts)).
+- **Various Modality Model Fine-Tuning** for diverse multi-modal (image/video/audio) models (see [scripts](scripts)).
 - **Different Alignment Methods.** Different alignment algorithms, including SFT, DPO, PPO, and others.
 - **Multi-Modal CLI.** Multi-modal CLI for image, audio, and video modalities (see [multi-modal CLI](#multi-modal-cli)).
-- **O1-like Training.** O1-like training based on [DollyTails](https://huggingface.co/datasets/PKU-Alignment/DollyTails-12K) (see [scripts/llama_sft_o1.sh](./scripts)).
+- **O1-like Training.** O1-like training based on [DollyTails](https://huggingface.co/datasets/PKU-Alignment/DollyTails-12K) (see [scripts/llama_sft_o1.sh](scripts)).
 - **Rule-based RL.** Rule-based RL encouraged by [Deepseek-R1](https://huggingface.co/deepseek-ai/DeepSeek-R1).
 
 **Note:** We provide a [quick start guide](https://align-anything.readthedocs.io/) for users to quickly get the code structure and development details.
@@ -53,7 +53,7 @@ Align-Anything aims to align any modality large models (any-to-any models) with 
 
 - **[Future]** ⚡️⚡️⚡️ We will integrate more cutting-edge MLLMs into our framework and develop our VLA part. Stay tuned!
 
-- **[2025.04.14]** 📜📜📜 We release the tutorial on SFT training for `text-image-to-text` models. Check out the [cookbook_en](./cookbooks/en/text_image_to_text_sft.ipynb) (for English) and [cookbook_zh](./cookbooks/zh/text_image_to_text_sft.ipynb) (for Chinese).
+- **[2025.04.14]** 📜📜📜 We release the tutorial on SFT training for `text-image-to-text` models. Check out the [cookbook_en](cookbooks/en/text_image_to_text_sft.ipynb) (for English) and [cookbook_zh](cookbooks/zh/text_image_to_text_sft.ipynb) (for Chinese).
 
 - **[2025.04.07]** 🥳🥳🥳 Align-Anything now serves as the homework platform for the PKU course [Large Language Models Basics and Alignment](https://pku-llm.ai/), supporting on both Nvidia GPU and Huawei Ascend NPU. The corresponding tutorial will be released soon!
 
@@ -67,9 +67,9 @@ Align-Anything aims to align any modality large models (any-to-any models) with 
 
     > 😊 Our implementation is encouraged by [OpenRLHF](https://github.com/OpenRLHF/OpenRLHF), which is a great project for RLHF training.
 
-- **[2025.03.27]** 📜📜📜 We release the tutorial on DPO training for `text-to-text` models. Check out the [cookbook_en](./cookbooks/en/text_to_text_dpo.ipynb) (for English) and [cookbook_zh](./cookbooks/zh/text_to_text_dpo.ipynb) (for Chinese).
+- **[2025.03.27]** 📜📜📜 We release the tutorial on DPO training for `text-to-text` models. Check out the [cookbook_en](cookbooks/en/text_to_text_dpo.ipynb) (for English) and [cookbook_zh](cookbooks/zh/text_to_text_dpo.ipynb) (for Chinese).
 
-- **[2025.03.15]** 📜📜📜 We release the tutorial for extending modality from `text-to-text` to `text-image-to-text` models. Check out the [cookbook_en](./cookbooks/en/modality_scaling.ipynb) (for English) and [cookbook_zh](./cookbooks/zh/modality_scaling.ipynb) (for Chinese).
+- **[2025.03.15]** 📜📜📜 We release the tutorial for extending modality from `text-to-text` to `text-image-to-text` models. Check out the [cookbook_en](cookbooks/en/modality_scaling.ipynb) (for English) and [cookbook_zh](cookbooks/zh/modality_scaling.ipynb) (for Chinese).
 
   > We will release other tutorials in the future. Stay tuned! 😊
 

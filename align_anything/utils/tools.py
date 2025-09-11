@@ -85,9 +85,9 @@ def dict_to_namedtuple(dic):
             return value
 
     class EnhancedNamedTuple(namedtuple('configs', dic.keys())):
-        __slots__ = ()
+        __slots__ = ()  # 禁止 python 给实例动态添加新属性，保证对象只包含 namedtuple 定义的字段
 
-        def __getattr__(self, item):
+        def __getattr__(self, item):  # 兜底方法，访问不存在的属性时，返回None而不是报错
             return None
 
     cfgs = EnhancedNamedTuple(**{k: convert(v) for k, v in dic.items()})
@@ -240,8 +240,8 @@ def read_eval_cfgs(task: str, backend: str) -> dict[str, Any]:
 
 def get_optimizer_grouped_parameters(
     module: nn.Module,
-    weight_decay: float,
-    no_decay_name_list=[
+    weight_decay: float,  # 需要权重衰减防止过拟合
+    no_decay_name_list=[  # 偏置项和归一化层，通常不需要权重衰减，因为对模型容量影响较小
         'bias',
         'layer_norm.weight',
         'layernorm.weight',
@@ -265,7 +265,7 @@ def get_optimizer_grouped_parameters(
                 for n, p in module.named_parameters()
                 if (any(nd in n for nd in no_decay_name_list) and p.requires_grad)
             ],
-            'weight_decay': 0.0,
+            'weight_decay': 0.0,  # 差异化权重衰减
         },
     ]
 

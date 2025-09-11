@@ -462,6 +462,41 @@ class Janus_TI2T(BaseFormatter):
 
         return better_conversation, worse_conversation, meta_info
 
+
+@register_template('Qwen_Omni_TI2T')
+class Qwen_Omni_TI2T(BaseFormatter):
+    system_prompt: str = 'You are Qwen, a virtual human developed by the Qwen Team, Alibaba Group, capable of perceiving auditory and visual inputs, as well as generating text and speech.'
+
+    def format_supervised_sample(
+        self, raw_sample: dict[str, Any]
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        prompt = raw_sample['prompt']
+        answer = raw_sample['response']
+
+        from PIL import Image
+        import io
+        import base64
+
+        image = Image.open(io.BytesIO(raw_sample['image'])).convert('RGBA')
+        img_base64 = base64.b64encode(raw_sample['image']).decode('utf-8')
+        # 添加 data URL 前缀，根据图片格式确定 MIME 类型
+        img_base64 = f"data:image/png;base64,{img_base64}"
+        # image = raw_sample['image'].convert('RGBA')
+
+        return [
+            {'role': 'system', 'content': self.system_prompt},
+            {
+                'role': 'user',
+                'content': [
+                    {'type': 'image', 'image': img_base64},
+                    {'type': 'text', 'text': prompt},
+                ],
+            },
+            {'role': 'assistant', 'content': [{'type': 'text', 'text': answer}]},
+        ], {'image': img_base64}
+
+
+
 @register_template('AA_TI2T')
 class AA_TI2T(BaseFormatter):
     system_prompt: str = ''

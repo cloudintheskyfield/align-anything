@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Copyright 2025 PKU-Alignment Team. All Rights Reserved.
+# Copyright 2024 PKU-Alignment Team. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,35 +16,31 @@
 # ==============================================================================
 
 
-#MODEL_NAME_OR_PATH="Qwen/Qwen2.5-0.5B-Instruct" # model path
-MODEL_NAME_OR_PATH='/mnt/data3/nlp/ws/model/Qwen2/Qwen/Qwen2.5-Omni-7B'
+MODEL_NAME_OR_PATH="Qwen/Qwen2.5-Omni-7B" # model path
 
-TRAIN_DATASETS="../assets/text_to_text/supervised" # sft dataset path
-TRAIN_TEMPLATE="Alpaca" # sft dataset template
-TRAIN_SPLIT="train" # split the sft dataset
+TRAIN_DATASETS="PKU-Alignment/Align-Anything-TI2T-Instruction-100K" # dataset path
+TRAIN_TEMPLATE="Qwen_Omni_TI2T" # dataset template
+TRAIN_SPLIT="train" # split the dat
 
-OUTPUT_ROOT_DIR=$OUTPUT_ROOT_DIR
+aset
 
-if [ -z "$OUTPUT_ROOT_DIR" ]; then
-    echo "OUTPUT_ROOT_DIR is not set"
-    OUTPUT_ROOT_DIR="../outputs"
-fi
-
-OUTPUT_DIR="${OUTPUT_ROOT_DIR}/qwen_2_5_sft" # output dir
+OUTPUT_DIR="../output/qwen_omni_sft" # output dir
 
 # For wandb online logging
 export WANDB_API_KEY=""
-
 # Source the setup script
 source ./setup.sh
 
 # Execute deepspeed command
 deepspeed \
      --master_port ${MASTER_PORT} \
-     --module align_anything.trainers.text_to_text.sft \
+     --module align_anything.trainers.qwen_omni.ti2t_sft \
      --model_name_or_path ${MODEL_NAME_OR_PATH} \
-     --train_template ${TRAIN_TEMPLATE} \
      --train_datasets ${TRAIN_DATASETS} \
+     --train_template ${TRAIN_TEMPLATE} \
      --train_split ${TRAIN_SPLIT} \
      --output_dir ${OUTPUT_DIR} \
-     --epochs 1 
+     --save_total_limit 2 \
+     --per_device_train_batch_size 1 \
+     --train_size 10 \
+     --epochs 3

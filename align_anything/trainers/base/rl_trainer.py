@@ -25,7 +25,10 @@ import deepspeed
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-from deepspeed.ops.adam import FusedAdam
+try:
+    from deepspeed.ops.adam import FusedAdam
+except ImportError:
+    FusedAdam = None
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
@@ -182,11 +185,29 @@ class RLTrainerBase:
         ds_cfgs: dict[str, Any],
     ) -> deepspeed.DeepSpeedEngine:
         optimizer_grouped_parameters = get_optimizer_grouped_parameters(model, weight_decay)
-        optimizer = FusedAdam(
-            optimizer_grouped_parameters,
-            lr=lr,
-            betas=self.cfgs.train_cfgs.adam_betas,
-        )
+        # 尝试使用 FusedAdam，如果不可用则回退到标准 Adam
+        if FusedAdam is not None:
+            try:
+                optimizer = FusedAdam(
+                    optimizer_grouped_parameters,
+                    lr=lr,
+                    betas=self.cfgs.train_cfgs.adam_betas,
+                )
+            except RuntimeError as e:
+                print(f"FusedAdam 构建失败，回退到标准 Adam: {e}")
+                optimizer = torch.optim.Adam(
+                    optimizer_grouped_parameters,
+                    lr=lr,
+                    betas=self.cfgs.train_cfgs.adam_betas,
+                    eps=self.cfgs.train_cfgs.adam_epsilon,
+                )
+        else:
+            optimizer = torch.optim.Adam(
+                optimizer_grouped_parameters,
+                lr=lr,
+                betas=self.cfgs.train_cfgs.adam_betas,
+                eps=self.cfgs.train_cfgs.adam_epsilon,
+            )
         lr_scheduler_update_steps = total_training_steps // ds_cfgs['gradient_accumulation_steps']
         num_warmup_steps = int(lr_scheduler_update_steps * lr_warmup_ratio)
         lr_scheduler = get_scheduler(
