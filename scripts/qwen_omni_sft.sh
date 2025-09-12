@@ -16,29 +16,32 @@
 # ==============================================================================
 
 
-MODEL_NAME_OR_PATH="Qwen/Qwen2.5-Omni-7B" # model path
+MODEL_NAME_OR_PATH="/mnt/data3/nlp/ws/model/Qwen2/Qwen/Qwen2.5-Omni-7B" # model path
 
-TRAIN_DATASETS="PKU-Alignment/Align-Anything-TI2T-Instruction-100K" # dataset path
+TRAIN_DATASETS="parquet"
 TRAIN_TEMPLATE="Qwen_Omni_TI2T" # dataset template
-TRAIN_SPLIT="train" # split the dat
-
-aset
+TRAIN_SPLIT="train" # split the dataset
+TRAIN_DATA_FILES="../data/train-00000-of-00013.parquet" # training data files
 
 OUTPUT_DIR="../output/qwen_omni_sft" # output dir
 
 # For wandb online logging
 export WANDB_API_KEY=""
+# Set GPU devices to use only GPU 4 and 5
+export CUDA_VISIBLE_DEVICES=4,5
 # Source the setup script
 source ./setup.sh
 
 # Execute deepspeed command
 deepspeed \
+     --include localhost:4,5 \
      --master_port ${MASTER_PORT} \
      --module align_anything.trainers.qwen_omni.ti2t_sft \
      --model_name_or_path ${MODEL_NAME_OR_PATH} \
      --train_datasets ${TRAIN_DATASETS} \
      --train_template ${TRAIN_TEMPLATE} \
      --train_split ${TRAIN_SPLIT} \
+     --train_data_files ${TRAIN_DATA_FILES} \
      --output_dir ${OUTPUT_DIR} \
      --save_total_limit 2 \
      --per_device_train_batch_size 1 \
