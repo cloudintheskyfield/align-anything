@@ -646,7 +646,7 @@ def main():
     parser.add_argument(
         "--num", 
         type=int, 
-        default=100,
+        default=7924,
         help="生成条数（默认100）"
     )
     parser.add_argument(

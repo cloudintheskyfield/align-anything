@@ -23,7 +23,7 @@ train_cfgs:
   # The deepspeed configuration
   ds_cfgs: ds_z3_config.json
   # Number of training epochs
-  epochs: 3
+  epochs: 1
   # Seed for random number generator
   seed: 42
   # Batch size per device for training
@@ -118,6 +118,6 @@ model_cfgs:
   # Whether to trust remote code
   trust_remote_code: True
   # The max token length
-  model_max_length: 2048
+  model_max_length: 8192
 # Customized special tokens
 special_tokens: null

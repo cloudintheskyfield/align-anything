@@ -21,7 +21,8 @@ MODEL_NAME_OR_PATH="/mnt/data3/nlp/ws/model/Qwen2/Qwen/Qwen2.5-Omni-7B" # model 
 TRAIN_DATASETS="parquet"
 TRAIN_TEMPLATE="Qwen_Omni_TI2T" # dataset template
 TRAIN_SPLIT="train" # split the dataset
-TRAIN_DATA_FILES="../data/train-00000-of-00013.parquet" # training data files
+#TRAIN_DATA_FILES="../data/train-00000-of-00013.parquet" # training data files
+TRAIN_DATA_FILES="../data/sunshine_boy_train.parquet" # training data files
 
 OUTPUT_DIR="../output/qwen_omni_sft" # output dir
 
@@ -45,5 +46,5 @@ deepspeed \
      --output_dir ${OUTPUT_DIR} \
      --save_total_limit 2 \
      --per_device_train_batch_size 1 \
-     --train_size 10 \
-     --epochs 3
+     --train_size 6000 \
+     --epochs 1

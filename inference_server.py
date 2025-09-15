@@ -77,11 +77,11 @@ def inference(text_input, image_data=None):
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=128,
+            max_new_tokens=256,
             do_sample=True,
-            temperature=1,
-            top_p=0.8,
-            repetition_penalty=1.1,
+            temperature=0.3,
+            top_p=0.9,
+            repetition_penalty=1.2,
             no_repeat_ngram_size=3,
             early_stopping=True,
             pad_token_id=processor.tokenizer.eos_token_id

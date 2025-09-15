@@ -11,6 +11,8 @@
       "offload_optimizer": {
           "device": "none"
       },
+      "overlap_comm": true,
+      "contiguous_gradients": true,
       "param_persistence_threshold": 1e4,
       "max_live_parameters": 1e8,
       "prefetch_bucket_size": 3e7,
