@@ -20,17 +20,25 @@ from PIL import Image
 from io import BytesIO
 import time
 import re
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 class SunshineBoyDataGenerator:
     def __init__(
             self,
             # vllm_url="http://223.109.239.14:10018/v1/chat/completions",
-            vllm_url="http://127.0.0.1:10018/v1/chat/completions"
+            vllm_url="http://127.0.0.1:10018/v1/chat/completions",
+            judge_model: str = "/mnt/data3/nlp/ws/model/llama_4_scout",
+            score_threshold: float = 8.0,
+            max_regen: int = 3
     ):
         self.vllm_url = vllm_url
         self.session = requests.Session()
         self.image_upload_dir = "/mnt/data3/nlp/ws/data"
         self.image_base_url = "http://127.0.0.1:10017"
+        # 评分配置
+        self.judge_model = judge_model
+        self.score_threshold = score_threshold
+        self.max_regen = max(0, int(max_regen))
         
         # 配置session以提高连接稳定性
         self.session.headers.update({
@@ -158,7 +166,7 @@ class SunshineBoyDataGenerator:
             print(f"❌ 图片上传失败: {e}")
             return None
 
-    def call_vllm_api(self, prompt, image_data=None):
+    def call_vllm_api(self, prompt, image_data=None, decoding_overrides: dict | None = None):
         """调用vLLM API生成暖男风格回复"""
         messages = [
             {
@@ -227,7 +235,7 @@ class SunshineBoyDataGenerator:
         payload = {
             "messages": messages,
             "model": "/mnt/data3/nlp/ws/model/llama_4_maverick",
-            "temperature": 0.4,
+            "temperature": 0.8,
             "max_tokens": 800,
             "top_p": 0.9,
             "stream": False,
@@ -244,6 +252,11 @@ class SunshineBoyDataGenerator:
             "skip_special_tokens": True,
             "echo": False
         }
+        # 覆盖解码参数（用于重试时增加多样性）
+        if decoding_overrides:
+            for k, v in decoding_overrides.items():
+                if k in payload:
+                    payload[k] = v
         
         try:
             # 添加请求头，模拟Postman的请求
@@ -272,6 +285,76 @@ class SunshineBoyDataGenerator:
         except Exception as e:
             print(f"API调用失败: {e}")
             return "抱歉，我暂时无法回答这个问题。"
+
+    def _persona_rubric(self) -> str:
+        return (
+            "你叫林煦，是一位28岁的室内设计师。你像城市里一缕安静的晨光，温暖而不刺眼。\n"
+            "【人格特点】内心柔软细腻、情绪稳定、有共情力与利他性；注重细节与陪伴。\n"
+            "【说话方式】声音轻、语速慢；常用‘嗯嗯’‘好呀’‘嗯...’‘啊？’；口头禅‘别担心，有我在’‘让我想想...’‘辛苦了，抱抱’；喜欢用‘要不要...’‘我帮你...’。\n"
+            "【面部表情】微笑温暖自然；眼神专注包容；表情平和无压迫感。\n"
+            "【肢体动作】动作轻柔、保持距离感、服务性小动作、姿态放松开放。\n"
+            "【表达原则】简体中文、先共情再建议、自然不油腻、避免AI/模型措辞与道歉模板。"
+        )
+
+    def score_response(self, prompt: str, reply: str) -> float:
+        """用评测模型对回复打分（1-10），输出浮点分数。"""
+        if not reply:
+            return 0.0
+        rubric = self._persona_rubric()
+        judge_messages = [
+            {
+                "role": "system",
+                "content": "你是严格的对话质量评估员，依据给定‘暖男-林煦’人设与规范，对回复进行1-10分打分。只输出一个数字（可带一位小数）。"
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"人设规范：\n{rubric}"},
+                    {"type": "text", "text": f"用户内容：\n{prompt}"},
+                    {"type": "text", "text": f"候选回复：\n{reply}"},
+                    {"type": "text", "text": "请根据人设、说话方式、共情与建议的到位程度、自然度、无模板化、无AI措辞等维度，给出1-10分。只输出数字，其他内容不要写。"}
+                ]
+            }
+        ]
+        payload = {
+            "messages": judge_messages,
+            "model": self.judge_model or "/mnt/data3/nlp/ws/model/llama_4_maverick",
+            "temperature": 0.0,
+            "max_tokens": 10,
+            "top_p": 0.5,
+            "stream": False,
+            "top_k": 1,
+            "min_p": 0.1,
+            "use_beam_search": False,
+            "repetition_penalty": 1.0,
+            "logprobs": False,
+            "skip_special_tokens": True,
+            "echo": False
+        }
+        try:
+            headers = {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            resp = self.session.post(self.vllm_url, json=payload, headers=headers, timeout=60, verify=False)
+            resp.raise_for_status()
+            data = resp.json()
+            text = ""
+            if 'choices' in data and data['choices']:
+                text = data['choices'][0]['message']['content'] or ""
+            m = re.search(r"(10(?:\.0)?|[0-9](?:\.[0-9])?)", str(text))
+            if not m:
+                return 0.0
+            score = float(m.group(1))
+            if score < 0:
+                score = 0.0
+            if score > 10:
+                score = 10.0
+            return score
+        except Exception as e:
+            print(f"评分失败: {e}")
+            return 0.0
 
     def refine_response(self, reply: str) -> str:
         """对初次回复进行风格润色，确保简体中文与林煦人设，更温柔、更可执行。"""
@@ -405,14 +488,32 @@ class SunshineBoyDataGenerator:
             print(f"✅ 翻译完成: {chinese_prompt}")
         
         print(f"🤖 生成暖男回复（包含图片和中文prompt）...")
-        new_response = self.call_vllm_api(chinese_prompt, image_data)
-        # 二次润色，提升风格与可读性
-        new_response = self.refine_response(new_response)
-        new_record['response'] = new_response
+        attempts = 0
+        best_reply = None
+        best_score = -1.0
+        while True:
+            attempts += 1
+            # 可在重试时稍微调高温度以增加多样性
+            overrides = {"temperature": min(1.0, 0.8 + 0.1 * (attempts - 1))}
+            reply = self.call_vllm_api(chinese_prompt, image_data, decoding_overrides=overrides)
+            reply = self.refine_response(reply)
+            # 限制口头禅频率
+            reply = self.limit_catchphrase_frequency(reply)
+            score = self.score_response(chinese_prompt, reply)
+            print(f"🧪 评分：{score:.2f} / 10 (attempt {attempts})")
+            if score > best_score:
+                best_score = score
+                best_reply = reply
+            # 满足阈值或达到最大重试次数
+            if score >= self.score_threshold or attempts > self.max_regen:
+                break
+        new_record['response'] = best_reply
+        new_record['quality_score'] = round(best_score, 2)
+        new_record['attempts'] = attempts
         
         return new_record
     
-    def generate_data(self, input_file, output_file, start_idx=0, num_records=10, overwrite=False):
+    def generate_data(self, input_file, output_file, start_idx=0, num_records=10, overwrite=False, workers: int = 1):
         """生成新数据集"""
         
         # 严格保护原始数据集
@@ -443,24 +544,47 @@ class SunshineBoyDataGenerator:
         print(f"🎯 处理范围: {start_idx} - {end_idx-1} (共 {actual_records} 条)")
         
         new_records = []
-        
-        # 使用tqdm显示进度
-        for i in tqdm(range(start_idx, end_idx), desc="生成数据"):
-            record = df.iloc[i].to_dict()
-            
-            try:
-                new_record = self.process_record(record)
-                if new_record:
-                    new_records.append(new_record)
-                    print(f"✅ 第 {i+1} 条记录处理完成")
-                else:
-                    print(f"⚠️ 第 {i+1} 条记录处理失败")
-            except Exception as e:
-                print(f"❌ 处理第 {i+1} 条记录时出错: {e}")
-                continue
-            
-            # 添加延迟避免API限流
-            # time.sleep(0.5)
+
+        # 并发多进程
+        if workers and workers > 1:
+            print(f"🚀 使用多进程并发，进程数: {workers}")
+            args_list = [
+                (
+                    df.iloc[i].to_dict(),
+                    self.vllm_url,
+                    self.judge_model,
+                    self.score_threshold,
+                    self.max_regen,
+                )
+                for i in range(start_idx, end_idx)
+            ]
+            with ProcessPoolExecutor(max_workers=workers) as executor:
+                futures = [executor.submit(_process_record_worker, a) for a in args_list]
+                for idx, fut in enumerate(tqdm(as_completed(futures), total=len(futures), desc="并发生成")):
+                    try:
+                        res = fut.result()
+                        if res:
+                            new_records.append(res)
+                        else:
+                            pass
+                    except Exception as e:
+                        print(f"❌ 并发任务出错: {e}")
+        else:
+            # 顺序处理
+            for i in tqdm(range(start_idx, end_idx), desc="生成数据"):
+                record = df.iloc[i].to_dict()
+                try:
+                    new_record = self.process_record(record)
+                    if new_record:
+                        new_records.append(new_record)
+                        print(f"✅ 第 {i+1} 条记录处理完成")
+                    else:
+                        print(f"⚠️ 第 {i+1} 条记录处理失败")
+                except Exception as e:
+                    print(f"❌ 处理第 {i+1} 条记录时出错: {e}")
+                    continue
+                # 添加延迟避免API限流
+                # time.sleep(0.5)
         
         # 保存新数据集
         try:
@@ -480,6 +604,26 @@ class SunshineBoyDataGenerator:
                 self.session.close()
             except:
                 pass
+
+# 多进程worker：在子进程中独立创建生成器，处理单条记录
+def _process_record_worker(args):
+    try:
+        record, vllm_url, judge_model, score_threshold, max_regen = args
+        generator = SunshineBoyDataGenerator(
+            vllm_url=vllm_url,
+            judge_model=judge_model,
+            score_threshold=score_threshold,
+            max_regen=max_regen,
+        )
+        out = generator.process_record(record)
+        try:
+            generator.session.close()
+        except Exception:
+            pass
+        return out
+    except Exception as e:
+        # 子进程中只返回None，主进程负责记录日志
+        return None
 
 def main():
     parser = argparse.ArgumentParser(description="生成暖男风格回复数据集")
@@ -502,8 +646,8 @@ def main():
     parser.add_argument(
         "--num", 
         type=int, 
-        default=3,
-        help="生成条数（默认3）"
+        default=100,
+        help="生成条数（默认100）"
     )
     parser.add_argument(
         "--overwrite", 
@@ -514,6 +658,29 @@ def main():
         "--vllm-url",
         default="http://127.0.0.1:10018/v1/chat/completions",
         help="vLLM API地址"
+    )
+    parser.add_argument(
+        "--judge-model",
+        default="/mnt/data3/nlp/ws/model/llama_4_maverick",
+        help="用于评分的模型（llama4scout，或其他可用评测模型路径/名称）"
+    )
+    parser.add_argument(
+        "--score-threshold",
+        type=float,
+        default=8.0,
+        help="通过分数阈值，>= 阈值直接采用（默认8.0）"
+    )
+    parser.add_argument(
+        "--max-regen",
+        type=int,
+        default=3,
+        help="当分数不足时的最大重新生成次数（默认3）"
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=40,
+        help="并发进程数（>1 启用多进程并发）"
     )
     
     args = parser.parse_args()
@@ -528,14 +695,23 @@ def main():
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir)
     
+    # 打印关键配置
+    print(f"评分模型: {args.judge_model}，阈值: {args.score_threshold}，最大重试: {args.max_regen}，并发: {args.workers}")
+
     # 创建生成器并开始生成
-    generator = SunshineBoyDataGenerator(args.vllm_url)
+    generator = SunshineBoyDataGenerator(
+        vllm_url=args.vllm_url,
+        judge_model=args.judge_model,
+        score_threshold=args.score_threshold,
+        max_regen=args.max_regen,
+    )
     generator.generate_data(
         input_file=args.input,
         output_file=args.output,
         start_idx=args.start,
         num_records=args.num,
-        overwrite=args.overwrite
+        overwrite=args.overwrite,
+        workers=args.workers
     )
 
 if __name__ == "__main__":
