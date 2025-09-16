@@ -125,16 +125,17 @@ def inference_streaming(conversation):
     
     with torch.no_grad(), torch.cuda.amp.autocast():
         # Generate tokens one by one for streaming
-        for step in range(128):  # max_new_tokens
+        for step in range(2048):  # Reduce max_new_tokens for faster streaming
             outputs = model.generate(
                 **inputs,
                 max_new_tokens=1,
                 do_sample=True,
-                temperature=0.3,
-                top_p=0.9,
-                repetition_penalty=1.1,
+                temperature=0.8,
+                top_p=0.8,
+                repetition_penalty=1.05,
                 pad_token_id=processor.tokenizer.eos_token_id,
-                use_cache=True
+                use_cache=True,
+                num_beams=1
             )
             
             # Handle different output formats
@@ -236,14 +237,15 @@ def inference(conversation):
     with torch.no_grad(), torch.cuda.amp.autocast():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=128,
+            max_new_tokens=64,  # Reduce from 128 to 64 for faster generation
             do_sample=True,
-            temperature=0.3,
-            top_p=0.9,
-            repetition_penalty=1.1,
+            temperature=0.8,  # Lower temperature for more focused generation
+            top_p=0.8,  # Slightly lower top_p
+            repetition_penalty=1.05,  # Reduce repetition penalty
             early_stopping=True,
             pad_token_id=processor.tokenizer.eos_token_id,
-            use_cache=True
+            use_cache=True,
+            num_beams=1  # Use greedy decoding for speed
         )
         
         # Handle different output formats
@@ -418,7 +420,6 @@ def inference_endpoint():
         
         return jsonify({
             'success': True,
-            'conversation': conversation,
             'response': result,
             'inference_time': request_time
         })

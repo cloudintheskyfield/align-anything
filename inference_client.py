@@ -677,7 +677,19 @@ def save_assessment_results(persona_data, no_persona_data):
     
     # 保存到parquet文件
     output_file = data_dir / "assessment.parquet"
-    df.to_parquet(output_file, index=False)
+    try:
+        df.to_parquet(output_file, index=False, engine='pyarrow')
+        print(f"✅ Parquet文件保存成功")
+    except Exception as e:
+        print(f"❌ Parquet保存失败，尝试使用fastparquet: {e}")
+        try:
+            df.to_parquet(output_file, index=False, engine='fastparquet')
+            print(f"✅ 使用fastparquet保存成功")
+        except Exception as e2:
+            print(f"❌ 所有parquet引擎都失败，保存为CSV: {e2}")
+            csv_file = data_dir / "assessment.csv"
+            df.to_csv(csv_file, index=False, encoding='utf-8')
+            print(f"✅ CSV文件保存成功: {csv_file}")
     
     print(f"\n💾 评估结果已保存到: {output_file}")
     print(f"📊 总记录数: {len(df)}")
@@ -799,6 +811,240 @@ def run_complete_assessment():
     
     return persona_data, no_persona_data
 
+def run_image_test():
+    """Run image test with multimodal questions"""
+    print("🖼️  开始图像多模态测试...")
+    
+    # 图像测试问题
+    image_questions = [
+        {
+            "question": "请详细描述这张图片中你看到的内容，包括主要物体、颜色、场景等。",
+            "test_type": "image_description"
+        },
+        {
+            "question": "这张图片给你什么感觉？请用温暖的语言描述你的感受。",
+            "test_type": "emotional_response"
+        },
+        {
+            "question": "如果你要给这张图片起一个诗意的标题，你会叫它什么？",
+            "test_type": "creative_naming"
+        },
+        {
+            "question": "假设这是你朋友拍的照片，你会如何夸奖他们的摄影技巧？",
+            "test_type": "social_interaction"
+        },
+        {
+            "question": "这张图片让你联想到什么美好的回忆或故事？",
+            "test_type": "memory_association"
+        }
+    ]
+    
+    # 获取图片文件
+    data_dir = Path("data")
+    image_files = list(data_dir.glob("test_image_*.jpg"))
+    
+    if not image_files:
+        print("❌ 未找到测试图片，请先运行 python download_images.py")
+        return []
+    
+    print(f"📸 找到 {len(image_files)} 张测试图片")
+    
+    # 系统提示词（暖男人设）
+    system_prompt = """你叫林煦，是一位28岁的室内设计师，性格温和体贴，善于倾听和共情。你总是用温暖的语言回应别人，喜欢从美好的角度看待事物。在描述图片时，你会注意到细节，并用诗意和温暖的语言表达。"""
+    
+    all_data = []
+    client = InferenceClient("http://localhost:10020")
+    
+    total_tests = len(image_files) * len(image_questions)
+    current_test = 0
+    
+    for img_idx, image_file in enumerate(image_files, 1):
+        print(f"\n🖼️  测试图片 {img_idx}/{len(image_files)}: {image_file.name}")
+        
+        for q_idx, q_data in enumerate(image_questions, 1):
+            current_test += 1
+            print(f"\n📝 问题 {q_idx}/{len(image_questions)} ({current_test}/{total_tests}): {q_data['test_type']}")
+            print(f"❓ {q_data['question']}")
+            
+            # 构建完整提示词
+            full_prompt = f"system\n{system_prompt}\nuser\n{q_data['question']}\nassistant\n"
+            
+            # 记录开始时间
+            start_time = time.time()
+            
+            try:
+                # 调用多模态推理
+                result = client.multimodal_inference(full_prompt, str(image_file))
+                inference_time = time.time() - start_time
+                
+                if "error" in result:
+                    print(f"❌ 推理失败: {result['error']}")
+                    continue
+                
+                response = result.get('response', '')
+                clean_response = client.extract_assistant_response(response)
+                
+                # 流式输出回复内容
+                print(f"🤖 回复: ", end='', flush=True)
+                # 使用简单的流式输出
+                for char in clean_response:
+                    print(char, end='', flush=True)
+                    time.sleep(0.02)
+                print(f"\n⏱️  推理时间: {inference_time:.2f}s")
+                
+                # 使用LLaMA评分
+                print(f"🔍 正在评分...")
+                score, reason = client.score_response_with_llama4(q_data['question'], clean_response)
+                print(f"📊 评分: {score}/10")
+                print(f"💭 理由: {reason}")
+                
+                # 获取图片文件信息和数据
+                image_size = image_file.stat().st_size
+                image_size_kb = image_size / 1024
+                
+                # 读取图片并转换为base64
+                try:
+                    with open(image_file, 'rb') as f:
+                        image_binary = f.read()
+                    image_base64 = base64.b64encode(image_binary).decode('utf-8')
+                except Exception as e:
+                    print(f"⚠️  图片读取失败: {e}")
+                    image_base64 = None
+                    image_binary = None
+                
+                # 保存数据
+                record = {
+                    'timestamp': datetime.now().isoformat(),
+                    'image_file': image_file.name,
+                    'image_path': str(image_file),
+                    'image_size_bytes': image_size,
+                    'image_size_kb': round(image_size_kb, 2),
+                    'image_data_base64': image_base64,  # Base64编码的图片数据
+                    'question_id': q_idx,
+                    'question': q_data['question'],
+                    'test_type': q_data['test_type'],
+                    'response': response,
+                    'clean_response': clean_response,
+                    'score': score,
+                    'reason': reason,
+                    'inference_time': inference_time,
+                    'system_prompt': system_prompt,
+                    'model_name': 'Qwen2_5OmniThinkerForConditionalGeneration',
+                    'server_url': 'http://localhost:10020',
+                    'llama4_url': 'http://127.0.0.1:10018/v1/chat/completions'
+                }
+                all_data.append(record)
+                
+            except Exception as e:
+                print(f"❌ 测试失败: {e}")
+                continue
+    
+    # 保存图像测试结果
+    save_image_assessment_data(all_data)
+    return all_data
+
+def save_image_assessment_data(all_data):
+    """Save image assessment data to parquet file"""
+    if not all_data:
+        print("❌ 没有数据可保存")
+        return
+    
+    # 创建DataFrame
+    df = pd.DataFrame(all_data)
+    
+    # 确保data目录存在
+    data_dir = Path("data")
+    data_dir.mkdir(exist_ok=True)
+    
+    # 保存到parquet文件
+    output_file = data_dir / "image_assessment.parquet"
+    try:
+        df.to_parquet(output_file, index=False, engine='pyarrow')
+        print(f"✅ 图像评估Parquet文件保存成功")
+    except Exception as e:
+        print(f"❌ Parquet保存失败，尝试使用fastparquet: {e}")
+        try:
+            df.to_parquet(output_file, index=False, engine='fastparquet')
+            print(f"✅ 使用fastparquet保存成功")
+        except Exception as e2:
+            print(f"❌ 所有parquet引擎都失败，保存为CSV: {e2}")
+            csv_file = data_dir / "image_assessment.csv"
+            df.to_csv(csv_file, index=False, encoding='utf-8')
+            print(f"✅ CSV文件保存成功: {csv_file}")
+    
+    print(f"\n💾 图像评估结果已保存到: {output_file}")
+    print(f"📊 总记录数: {len(df)}")
+    print(f"📈 数据列: {list(df.columns)}")
+    
+    # 显示统计信息
+    if len(df) > 0:
+        avg_score = df['score'].mean()
+        max_score = df['score'].max()
+        min_score = df['score'].min()
+        high_score = len(df[df['score'] >= 8.0])
+        avg_time = df['inference_time'].mean()
+        
+        print(f"\n📊 图像测试统计:")
+        print(f"   📊 平均分: {avg_score:.2f}/10")
+        print(f"   🔝 最高分: {max_score:.1f}/10")
+        print(f"   🔻 最低分: {min_score:.1f}/10")
+        print(f"   ⭐ 高分(≥8分): {high_score}/{len(df)} ({high_score/len(df)*100:.1f}%)")
+        print(f"   ⏱️  平均推理时间: {avg_time:.2f}s")
+        
+        # 按测试类型统计
+        print(f"\n📋 按测试类型统计:")
+        for test_type in df['test_type'].unique():
+            type_data = df[df['test_type'] == test_type]
+            type_avg = type_data['score'].mean()
+            print(f"   🎯 {test_type}: {type_avg:.2f}/10 ({len(type_data)}条)")
+        
+        # 按图片文件统计
+        print(f"\n📸 按图片文件统计:")
+        for image_file in df['image_file'].unique():
+            img_data = df[df['image_file'] == image_file]
+            img_avg = img_data['score'].mean()
+            img_size = img_data['image_size_kb'].iloc[0] if len(img_data) > 0 else 0
+            print(f"   🖼️  {image_file} ({img_size}KB): {img_avg:.2f}/10 ({len(img_data)}条)")
+    
+    # 保存数据字典
+    data_dict = {
+        'columns': {
+            'timestamp': '测试时间戳',
+            'image_file': '测试图片文件名',
+            'image_path': '图片完整路径',
+            'image_size_bytes': '图片文件大小(字节)',
+            'image_size_kb': '图片文件大小(KB)',
+            'image_data_base64': '图片Base64编码数据(可直接显示)',
+            'question_id': '问题编号',
+            'question': '测试问题',
+            'test_type': '测试类型',
+            'response': '模型原始回复',
+            'clean_response': '提取的助手回复内容',
+            'score': '图像理解评分(1-10)',
+            'reason': '评分详细理由',
+            'inference_time': '推理耗时(秒)',
+            'system_prompt': '系统提示词内容',
+            'model_name': '模型名称',
+            'server_url': '推理服务器地址',
+            'llama4_url': '评分模型地址'
+        },
+        'test_summary': {
+            'total_records': len(df),
+            'avg_score': avg_score if len(df) > 0 else None,
+            'max_score': max_score if len(df) > 0 else None,
+            'min_score': min_score if len(df) > 0 else None,
+            'high_score_count': high_score if len(df) > 0 else None,
+            'avg_inference_time': avg_time if len(df) > 0 else None
+        }
+    }
+    
+    # 保存数据字典到JSON
+    dict_file = data_dir / "image_assessment_metadata.json"
+    with open(dict_file, 'w', encoding='utf-8') as f:
+        json.dump(data_dict, f, ensure_ascii=False, indent=2)
+    
+    print(f"\n📋 图像测试数据字典已保存到: {dict_file}")
+
 def main():
     parser = argparse.ArgumentParser(description="Qwen Omni Inference Client")
     parser.add_argument("--server", default="http://localhost:10020", help="Server URL")
@@ -810,17 +1056,24 @@ def main():
     )
     parser.add_argument("--image", help="Path to image file (optional)")
     parser.add_argument("--check-health", action="store_true", help="Check server health")
-    parser.add_argument("--test", action="store_false", help="Run test questions")
-    parser.add_argument("--assessment", action="store_false", help="Run complete assessment and save to parquet")
+    parser.add_argument("--test", action="store_true", help="Run test questions")
+    parser.add_argument("--assessment", action="store_true", help="Run complete assessment and save to parquet")
+    parser.add_argument("--image-test", action="store_false", help="Run image test with multimodal questions")
     
     args = parser.parse_args()
     
+    # Create client instance for all operations
+    client = InferenceClient(args.server)
+    
     if args.assessment:
         run_complete_assessment()
+        return
     elif args.test:
         run_test_questions()
-    else:
-        client = InferenceClient(args.server)
+        return
+    elif getattr(args, 'image_test', False):
+        run_image_test()
+        return
     
     # Health check if requested
     if args.check_health:
@@ -832,11 +1085,6 @@ def main():
             return
         print("✅ Server is healthy!")
         print()
-    
-    # Run test questions if requested
-    if args.test:
-        run_test_questions(client)
-        return
     
     # Perform inference
     print(f"📝 Text input: {args.text}")
