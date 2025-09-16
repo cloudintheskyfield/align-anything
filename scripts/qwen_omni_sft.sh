@@ -26,6 +26,8 @@ TRAIN_DATA_FILES="../data/sunshine_boy_train.parquet" # training data files
 
 OUTPUT_DIR="../output/qwen_omni_sft" # output dir
 
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 # For wandb online logging
 export WANDB_API_KEY=""
 # Set GPU devices to use only GPU 4 and 5
