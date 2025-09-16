@@ -15,7 +15,7 @@ import json
 import time
 from io import BytesIO
 from PIL import Image
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from transformers import Qwen2_5OmniForConditionalGeneration, Qwen2_5OmniProcessor, Qwen2_5OmniThinkerForConditionalGeneration
 from qwen_omni_utils import process_mm_info
 
@@ -73,6 +73,121 @@ def load_model():
         for i in range(torch.cuda.device_count()):
             props = torch.cuda.get_device_properties(i)
             print(f"💾 GPU {i}: {props.name} - {props.total_memory / 1024**3:.1f}GB")
+
+def inference_streaming(conversation):
+    """
+    Perform streaming inference with the loaded model using official Qwen format
+    Args:
+        conversation: List of message dictionaries in Qwen format
+    Yields:
+        dict: Streaming response chunks with token and metadata
+    """
+    start_time = time.time()
+    print(f"🚀 Starting streaming inference at {time.strftime('%H:%M:%S')}")
+    print(f"📝 Conversation: {len(conversation)} messages")
+    
+    # Preprocessing time - use official format
+    prep_start = time.time()
+    
+    # Apply chat template
+    text = processor.apply_chat_template(conversation, add_generation_prompt=True, tokenize=False)
+    print(f"📝 Generated text: {text[:200]}{'...' if len(text) > 200 else ''}")
+    
+    # Process multimedia info
+    audios, images, videos = process_mm_info(conversation, use_audio_in_video=False)
+    
+    # Prepare inputs
+    inputs = processor(
+        text=text, 
+        audio=audios, 
+        images=images, 
+        videos=videos, 
+        return_tensors="pt", 
+        padding=True
+    )
+    
+    # Move inputs to appropriate devices for multi-GPU setup
+    first_device = model.device if hasattr(model, 'device') else next(model.parameters()).device
+    inputs = {k: v.to(first_device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
+    # Convert to model dtype for tensor inputs
+    for k, v in inputs.items():
+        if isinstance(v, torch.Tensor) and v.dtype != torch.long:  # Don't convert input_ids
+            inputs[k] = v.to(model.dtype)
+    prep_time = time.time() - prep_start
+    print(f"⚙️  Preprocessing time: {prep_time:.3f}s")
+    
+    # Streaming generation
+    gen_start = time.time()
+    print(f"🎯 Running streaming inference on device: {first_device}")
+    
+    input_length = inputs['input_ids'].shape[1]
+    generated_tokens = []
+    
+    with torch.no_grad(), torch.cuda.amp.autocast():
+        # Generate tokens one by one for streaming
+        for step in range(128):  # max_new_tokens
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=1,
+                do_sample=True,
+                temperature=0.3,
+                top_p=0.9,
+                repetition_penalty=1.1,
+                pad_token_id=processor.tokenizer.eos_token_id,
+                use_cache=True
+            )
+            
+            # Handle different output formats
+            if isinstance(outputs, tuple) and len(outputs) == 2:
+                text_ids, audio = outputs
+            else:
+                text_ids = outputs
+                audio = None
+            
+            # Get new token
+            new_token_id = text_ids[0, -1].item()
+            
+            # Check for EOS token
+            if new_token_id == processor.tokenizer.eos_token_id:
+                break
+            
+            # Decode new token
+            new_token = processor.tokenizer.decode([new_token_id], skip_special_tokens=True)
+            generated_tokens.append(new_token)
+            
+            # Yield streaming response
+            yield {
+                'token': new_token,
+                'partial_response': ''.join(generated_tokens),
+                'step': step + 1,
+                'finished': False
+            }
+            
+            # Update inputs for next iteration
+            inputs['input_ids'] = text_ids
+            if 'attention_mask' in inputs:
+                attention_mask = torch.cat([
+                    inputs['attention_mask'], 
+                    torch.ones((1, 1), device=inputs['attention_mask'].device, dtype=inputs['attention_mask'].dtype)
+                ], dim=1)
+                inputs['attention_mask'] = attention_mask
+    
+    gen_time = time.time() - gen_start
+    final_response = ''.join(generated_tokens)
+    
+    print(f"🧠 Streaming generation time: {gen_time:.3f}s")
+    print(f"🤖 Final response length: {len(final_response)} chars")
+    print("-" * 50)
+    
+    # Final response
+    yield {
+        'token': '',
+        'partial_response': final_response,
+        'step': len(generated_tokens),
+        'finished': True,
+        'total_time': time.time() - start_time,
+        'generation_time': gen_time
+    }
 
 def inference(conversation):
     """
@@ -163,6 +278,85 @@ def health_check():
         'device': str(model.device) if model else None
     })
 
+@app.route('/inference/stream', methods=['POST'])
+def inference_stream_endpoint():
+    """
+    Streaming inference endpoint using Server-Sent Events (SSE)
+    Expects JSON with:
+    - conversation: list of message dictionaries (required)
+    OR
+    - text: string (required) - will be converted to conversation format
+    - system: string (optional) - system prompt
+    - image: base64 encoded image (optional)
+    """
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'Missing request data'}), 400
+        
+        # Handle conversation format or convert from text
+        if 'conversation' in data:
+            conversation = data['conversation']
+        elif 'text' in data:
+            # Convert text input to conversation format
+            conversation = []
+            
+            # Add system message if provided
+            if 'system' in data and data['system']:
+                conversation.append({
+                    "role": "system",
+                    "content": [{"type": "text", "text": data['system']}]
+                })
+            
+            # Add user message
+            user_content = []
+            
+            # Handle image if provided
+            if 'image' in data and data['image']:
+                try:
+                    # Decode base64 image
+                    image_bytes = base64.b64decode(data['image'])
+                    image_data = Image.open(BytesIO(image_bytes))
+                    user_content.append({"type": "image", "image": image_data})
+                except Exception as e:
+                    return jsonify({'error': f'Invalid image data: {str(e)}'}), 400
+            
+            user_content.append({"type": "text", "text": data['text']})
+            conversation.append({
+                "role": "user",
+                "content": user_content
+            })
+        else:
+            return jsonify({'error': 'Missing conversation or text input'}), 400
+        
+        def generate_stream():
+            """Generator function for streaming response"""
+            try:
+                for chunk in inference_streaming(conversation):
+                    # Format as Server-Sent Events
+                    yield f"data: {json.dumps(chunk)}\n\n"
+            except Exception as e:
+                error_chunk = {
+                    'error': str(e),
+                    'finished': True
+                }
+                yield f"data: {json.dumps(error_chunk)}\n\n"
+        
+        return Response(
+            generate_stream(),
+            mimetype='text/plain',
+            headers={
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+                'Access-Control-Allow-Origin': '*'
+            }
+        )
+        
+    except Exception as e:
+        print(f"❌ Streaming request failed: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/inference', methods=['POST'])
 def inference_endpoint():
     """
@@ -234,6 +428,58 @@ def inference_endpoint():
         print(f"❌ Request failed after {request_time:.3f}s: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/inference/text/stream', methods=['POST'])
+def text_inference_stream():
+    """Streaming text-only inference endpoint using Server-Sent Events (SSE)"""
+    try:
+        data = request.get_json()
+        
+        if not data or 'text' not in data:
+            return jsonify({'error': 'Missing text input'}), 400
+        
+        # Convert to conversation format
+        conversation = []
+        
+        # Add system message if provided
+        if 'system' in data and data['system']:
+            conversation.append({
+                "role": "system",
+                "content": [{"type": "text", "text": data['system']}]
+            })
+        
+        # Add user message
+        conversation.append({
+            "role": "user",
+            "content": [{"type": "text", "text": data['text']}]
+        })
+        
+        def generate_stream():
+            """Generator function for streaming text response"""
+            try:
+                for chunk in inference_streaming(conversation):
+                    # Format as Server-Sent Events
+                    yield f"data: {json.dumps(chunk)}\n\n"
+            except Exception as e:
+                error_chunk = {
+                    'error': str(e),
+                    'finished': True
+                }
+                yield f"data: {json.dumps(error_chunk)}\n\n"
+        
+        return Response(
+            generate_stream(),
+            mimetype='text/plain',
+            headers={
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+                'Access-Control-Allow-Origin': '*'
+            }
+        )
+        
+    except Exception as e:
+        print(f"❌ Streaming text request failed: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/inference/text', methods=['POST'])
 def text_inference():
     """Simple text-only inference endpoint using official Qwen conversation format"""
@@ -284,7 +530,9 @@ if __name__ == '__main__':
     print("📡 Endpoints:")
     print("  - GET  /health - Health check")
     print("  - POST /inference - Full inference (text + optional image)")
+    print("  - POST /inference/stream - Streaming full inference")
     print("  - POST /inference/text - Text-only inference")
+    print("  - POST /inference/text/stream - Streaming text-only inference")
     print("🔗 Server running on http://localhost:10020")
     print("⏹️  Press Ctrl+C to stop")
     
