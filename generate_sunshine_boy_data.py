@@ -3,7 +3,39 @@
 数据生成脚本 - 生成暖男回复数据集
 从原始parquet数据集生成新的数据，调用vLLM API生成暖男风格的回复
 
-python generate_sunshine_boy_data.py --num 20 --start 5 --overwrite
+使用说明:
+=========
+
+1. 单文件处理模式（默认）:
+   python generate_sunshine_boy_data.py --input data/train.parquet --output data/sunshine_boy_train.parquet --num 100
+
+2. 批量处理模式（处理整个目录）:
+   python generate_sunshine_boy_data.py --batch --input data/origin_dataset/data --output data/target_dataset --num 100
+
+参数说明:
+--------
+--input         输入parquet文件路径或目录路径（批量模式）
+--output        输出parquet文件路径或目录路径（批量模式）
+--batch         启用批量处理模式，处理输入目录下所有parquet文件
+--start         起始位置，从第几条记录开始处理（默认0）
+--num           处理记录数量（默认为空，处理全部记录）
+--overwrite     是否覆盖已存在的输出文件
+--workers       并发进程数（默认40）
+--vllm-url      vLLM API地址
+--judge-model   评分模型路径
+--score-threshold  质量评分阈值（默认8.0）
+--max-regen     最大重新生成次数（默认3）
+
+示例:
+----
+# 处理单个文件，生成100条记录
+python generate_sunshine_boy_data.py --input data/train.parquet --output data/sunshine_boy_train.parquet --num 100
+
+# 批量处理目录下所有parquet文件
+python generate_sunshine_boy_data.py --batch --input data/origin_dataset --output data/target_dataset --num 50 --workers 20
+
+# 从第10条记录开始处理20条，覆盖已存在文件
+python generate_sunshine_boy_data.py --input data/train.parquet --output data/output.parquet --start 10 --num 20 --overwrite
 """
 
 import pandas as pd
@@ -513,7 +545,37 @@ class SunshineBoyDataGenerator:
         
         return new_record
     
-    def generate_data(self, input_file, output_file, start_idx=0, num_records=10, overwrite=False, workers: int = 1):
+    def generate_data_batch(self, input_dir, output_dir, start_idx=0, num_records=None, overwrite=False, workers: int = 1):
+        """批量处理目录下所有parquet文件"""
+        input_path = Path(input_dir)
+        output_path = Path(output_dir)
+        
+        if not input_path.exists():
+            print(f"❌ 输入目录不存在: {input_dir}")
+            return
+        
+        # 查找所有parquet文件
+        parquet_files = list(input_path.glob("*.parquet"))
+        if not parquet_files:
+            print(f"❌ 在目录 {input_dir} 中未找到parquet文件")
+            return
+        
+        print(f"📁 找到 {len(parquet_files)} 个parquet文件:")
+        for f in parquet_files:
+            print(f"   📄 {f.name}")
+        
+        # 创建输出目录
+        output_path.mkdir(parents=True, exist_ok=True)
+        
+        # 处理每个文件
+        for parquet_file in parquet_files:
+            input_file = str(parquet_file)
+            output_file = str(output_path / f"sunshine_boy_{parquet_file.name}")
+            
+            print(f"\n🔄 处理文件: {parquet_file.name}")
+            self.generate_data(input_file, output_file, start_idx, num_records, overwrite, workers)
+    
+    def generate_data(self, input_file, output_file, start_idx=0, num_records=None, overwrite=False, workers: int = 1):
         """生成新数据集"""
         
         # 严格保护原始数据集
@@ -538,7 +600,10 @@ class SunshineBoyDataGenerator:
             return
         
         # 计算实际处理范围
-        end_idx = min(start_idx + num_records, total_records)
+        if num_records is None:
+            end_idx = total_records
+        else:
+            end_idx = min(start_idx + num_records, total_records)
         actual_records = end_idx - start_idx
         
         print(f"🎯 处理范围: {start_idx} - {end_idx-1} (共 {actual_records} 条)")
@@ -630,12 +695,17 @@ def main():
     parser.add_argument(
         "--input", 
         default="data/train-00000-of-00013.parquet",
-        help="输入parquet文件路径"
+        help="输入parquet文件路径或目录路径（批量处理）"
     )
     parser.add_argument(
         "--output",
         default="data/sunshine_boy_train.parquet", 
-        help="输出parquet文件路径"
+        help="输出parquet文件路径或目录路径（批量处理）"
+    )
+    parser.add_argument(
+        "--batch",
+        action="store_true",
+        help="批量处理模式：处理输入目录下所有parquet文件到输出目录"
     )
     parser.add_argument(
         "--start", 
@@ -646,8 +716,8 @@ def main():
     parser.add_argument(
         "--num", 
         type=int, 
-        default=7924,
-        help="生成条数（默认100）"
+        default=None,
+        help="生成条数（默认为空，处理全部记录）"
     )
     parser.add_argument(
         "--overwrite", 
@@ -685,34 +755,49 @@ def main():
     
     args = parser.parse_args()
     
-    # 检查输入文件
+    # 检查输入路径
     if not os.path.exists(args.input):
-        print(f"❌ 输入文件不存在: {args.input}")
+        print(f"❌ 输入路径不存在: {args.input}")
         return
-    
-    # 创建输出目录
-    output_dir = os.path.dirname(args.output)
-    if output_dir and not os.path.exists(output_dir):
-        os.makedirs(output_dir)
     
     # 打印关键配置
     print(f"评分模型: {args.judge_model}，阈值: {args.score_threshold}，最大重试: {args.max_regen}，并发: {args.workers}")
 
-    # 创建生成器并开始生成
+    # 创建生成器
     generator = SunshineBoyDataGenerator(
         vllm_url=args.vllm_url,
         judge_model=args.judge_model,
         score_threshold=args.score_threshold,
         max_regen=args.max_regen,
     )
-    generator.generate_data(
-        input_file=args.input,
-        output_file=args.output,
-        start_idx=args.start,
-        num_records=args.num,
-        overwrite=args.overwrite,
-        workers=args.workers
-    )
+    
+    if args.batch:
+        # 批量处理模式
+        print("🔄 批量处理模式")
+        generator.generate_data_batch(
+            input_dir=args.input,
+            output_dir=args.output,
+            start_idx=args.start,
+            num_records=args.num,
+            overwrite=args.overwrite,
+            workers=args.workers
+        )
+    else:
+        # 单文件处理模式
+        print("🔄 单文件处理模式")
+        # 创建输出目录
+        output_dir = os.path.dirname(args.output)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        
+        generator.generate_data(
+            input_file=args.input,
+            output_file=args.output,
+            start_idx=args.start,
+            num_records=args.num,
+            overwrite=args.overwrite,
+            workers=args.workers
+        )
 
 if __name__ == "__main__":
     try:

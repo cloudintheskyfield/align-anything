@@ -3,6 +3,7 @@
 Inference Client for Qwen Omni Model Server
 Sends requests to the inference server for text and image processing
 """
+import os
 
 import requests
 import base64
@@ -214,6 +215,46 @@ class InferenceClient:
                 data["image"] = self.encode_image(image_path)
                 encode_time = time.time() - encode_start
                 print(f"📷 Image encoding time: {encode_time:.3f}s")
+            
+            response = requests.post(
+                f"{self.server_url}/inference",
+                json=data,
+                timeout=120
+            )
+            request_time = time.time() - start_time
+            print(f"📥 Response received in {request_time:.3f}s")
+            
+            result = response.json()
+            if 'inference_time' in result:
+                print(f"🧠 Server inference time: {result['inference_time']:.3f}s")
+            return result
+        except Exception as e:
+            request_time = time.time() - start_time
+            print(f"❌ Request failed after {request_time:.3f}s")
+            return {"error": str(e)}
+    
+    def multimodal_inference_conversation(self, conversation, image_path=None):
+        """Send multimodal inference request with conversation format"""
+        start_time = time.time()
+        print(f"📤 Sending multimodal conversation request at {time.strftime('%H:%M:%S')}")
+        if image_path:
+            print(f"🖼️  Including image: {image_path}")
+        
+        try:
+            data = {"conversation": conversation}
+            
+            if image_path:
+                encode_start = time.time()
+                # Add image to user message content as URL
+                for message in conversation:
+                    if message["role"] == "user":
+                        message["content"].append({
+                            "type": "image", 
+                            "image": f"{os.path.abspath(image_path)}"
+                        })
+                        break
+                encode_time = time.time() - encode_start
+                print(f"📷 Image URL processing time: {encode_time:.3f}s")
             
             response = requests.post(
                 f"{self.server_url}/inference",
@@ -866,15 +907,26 @@ def run_image_test():
             print(f"\n📝 问题 {q_idx}/{len(image_questions)} ({current_test}/{total_tests}): {q_data['test_type']}")
             print(f"❓ {q_data['question']}")
             
-            # 构建完整提示词
-            full_prompt = f"system\n{system_prompt}\nuser\n{q_data['question']}\nassistant\n"
+            # 构建标准对话格式
+            conversation = [
+                {
+                    "role": "system",
+                    "content": [{"type": "text", "text": system_prompt}]
+                },
+                {
+                    "role": "user", 
+                    "content": [
+                        {"type": "text", "text": q_data['question']}
+                    ]
+                }
+            ]
             
             # 记录开始时间
             start_time = time.time()
             
             try:
-                # 调用多模态推理
-                result = client.multimodal_inference(full_prompt, str(image_file))
+                # 调用多模态推理，使用标准对话格式
+                result = client.multimodal_inference_conversation(conversation, str(image_file))
                 inference_time = time.time() - start_time
                 
                 if "error" in result:

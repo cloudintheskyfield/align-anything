@@ -412,8 +412,42 @@ def inference_endpoint():
         else:
             return jsonify({'error': 'Missing conversation or text input'}), 400
         
+        # Process conversation to handle image URLs
+        processed_conversation = []
+        for message in conversation:
+            processed_message = message.copy()
+            if message.get("role") == "user" and "content" in message:
+                processed_content = []
+                for content_item in message["content"]:
+                    if content_item.get("type") == "image":
+                        image_ref = content_item.get("image")
+                        if isinstance(image_ref, str):
+                            # Handle file URL
+                            try:
+                                file_path = image_ref
+                                # file_path = image_ref[7:]  # Remove "file://" prefix
+                                image_data = Image.open(file_path)
+                                processed_content.append({"type": "image", "image": image_data})
+                            except Exception as e:
+                                return jsonify({'error': f'Failed to load image from URL {image_ref}: {str(e)}'}), 400
+                        elif isinstance(image_ref, str):
+                            # Handle base64 encoded image
+                            try:
+                                image_bytes = base64.b64decode(image_ref)
+                                image_data = Image.open(BytesIO(image_bytes))
+                                processed_content.append({"type": "image", "image": image_data})
+                            except Exception as e:
+                                return jsonify({'error': f'Invalid image data: {str(e)}'}), 400
+                        else:
+                            # Already processed image object
+                            processed_content.append(content_item)
+                    else:
+                        processed_content.append(content_item)
+                processed_message["content"] = processed_content
+            processed_conversation.append(processed_message)
+        
         # Perform inference
-        result = inference(conversation)
+        result = inference(processed_conversation)
         
         request_time = time.time() - request_start
         print(f"🌐 Total request time: {request_time:.3f}s")
