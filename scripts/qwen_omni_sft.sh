@@ -21,8 +21,8 @@ MODEL_NAME_OR_PATH="/mnt/data3/nlp/ws/model/Qwen2/Qwen/Qwen2.5-Omni-7B" # model 
 TRAIN_DATASETS="parquet"
 TRAIN_TEMPLATE="Qwen_Omni_TI2T" # dataset template
 TRAIN_SPLIT="train" # split the dataset
-#TRAIN_DATA_FILES="../data/train-00000-of-00013.parquet" # training data files
-TRAIN_DATA_FILES="../data/sunshine_boy_train.parquet" # training data files
+# Use all parquet files in target_dataset for training only (no test split)
+TRAIN_DATA_FILES="../data/target_dataset/*.parquet"
 
 OUTPUT_DIR="../output/qwen_omni_sft" # output dir
 
@@ -31,13 +31,13 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # For wandb online logging
 export WANDB_API_KEY=""
 # Set GPU devices to use only GPU 4 and 5
-export CUDA_VISIBLE_DEVICES=4,5
+export CUDA_VISIBLE_DEVICES=4
 # Source the setup script
 source ./setup.sh
 
 # Execute deepspeed command
 deepspeed \
-     --include localhost:4,5 \
+     --include localhost:4 \
      --master_port ${MASTER_PORT} \
      --module align_anything.trainers.qwen_omni.ti2t_sft \
      --model_name_or_path ${MODEL_NAME_OR_PATH} \

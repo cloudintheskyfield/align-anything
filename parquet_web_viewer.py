@@ -34,11 +34,12 @@ HTML_TEMPLATE = """
         table { border-collapse: collapse; width: 100%; margin-top: 10px; }
         th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
         th { background-color: #f2f2f2; }
-        .record { margin-bottom: 20px; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
-        .record-header { font-weight: bold; color: #333; margin-bottom: 10px; }
-        .field { margin-bottom: 8px; }
-        .field-name { font-weight: bold; color: #666; }
-        .field-value { margin-left: 10px; word-wrap: break-word; }
+        .record { margin-bottom: 15px; padding: 12px; border: 1px solid #e0e0e0; border-radius: 8px; background: #fafafa; }
+        .record-header { font-weight: bold; color: #2c3e50; margin-bottom: 8px; font-size: 16px; }
+        .record-row { display: flex; flex-wrap: wrap; gap: 15px; align-items: flex-start; }
+        .field { display: flex; align-items: flex-start; min-width: 200px; max-width: 400px; }
+        .field-name { font-weight: bold; color: #34495e; min-width: 80px; margin-right: 8px; }
+        .field-value { flex: 1; word-wrap: break-word; background: white; padding: 4px 8px; border-radius: 4px; border: 1px solid #ddd; }
         .long-text { max-height: 100px; overflow-y: auto; background: #f9f9f9; padding: 5px; }
         .image-container { margin: 10px 0; }
         .image-preview { max-width: 300px; max-height: 200px; border: 1px solid #ddd; border-radius: 5px; cursor: pointer; }
@@ -57,7 +58,10 @@ HTML_TEMPLATE = """
     </div>
     
     <div class="controls">
-        <select id="fileSelect" onchange="loadFile()">
+        <select id="dirSelect" onchange="loadDirectory()">
+            <option value="">Select a directory...</option>
+        </select>
+        <select id="fileSelect" onchange="loadFile()" disabled>
             <option value="">Select a parquet file...</option>
         </select>
         <input type="number" id="limitInput" placeholder="Limit (default: 10)" min="1" max="1000">
@@ -76,18 +80,40 @@ HTML_TEMPLATE = """
     </div>
     
     <script>
-        // Load available files on page load
-        fetch('/api/files')
+        // Load available directories on page load
+        fetch('/api/directories')
             .then(response => response.json())
-            .then(files => {
-                const select = document.getElementById('fileSelect');
-                files.forEach(file => {
+            .then(dirs => {
+                const select = document.getElementById('dirSelect');
+                dirs.forEach(dir => {
                     const option = document.createElement('option');
-                    option.value = file;
-                    option.textContent = file;
+                    option.value = dir;
+                    option.textContent = dir;
                     select.appendChild(option);
                 });
             });
+        
+        function loadDirectory() {
+            const dir = document.getElementById('dirSelect').value;
+            const fileSelect = document.getElementById('fileSelect');
+            
+            // Clear file selection
+            fileSelect.innerHTML = '<option value="">Select a parquet file...</option>';
+            fileSelect.disabled = !dir;
+            
+            if (!dir) return;
+            
+            fetch(`/api/files?dir=${encodeURIComponent(dir)}`)
+                .then(response => response.json())
+                .then(files => {
+                    files.forEach(file => {
+                        const option = document.createElement('option');
+                        option.value = file;
+                        option.textContent = file.split('/').pop(); // Show only filename
+                        fileSelect.appendChild(option);
+                    });
+                });
+        }
         
         function loadFile() {
             const file = document.getElementById('fileSelect').value;
@@ -140,6 +166,8 @@ HTML_TEMPLATE = """
                     <div class="record">
                         <div class="record-header">Record ${idx + 1}</div>
                 `;
+                
+                html += '<div class="record-row">';
                 
                 Object.entries(record).forEach(([key, value]) => {
                     let displayValue = value;
@@ -243,7 +271,7 @@ HTML_TEMPLATE = """
                     `;
                 });
                 
-                html += '</div>';
+                html += '</div></div>'; // Close record-row and record
             });
             
             document.getElementById('content').innerHTML = html;
@@ -363,18 +391,39 @@ def _try_convert_image_value_to_b64(value):
 def index():
     return render_template_string(HTML_TEMPLATE)
 
-@app.route('/api/files')
-def get_files():
-    """Get list of parquet files in data directory"""
+@app.route('/api/directories')
+def get_directories():
+    """Get list of directories under data folder recursively"""
     data_dir = Path('data')
     if not data_dir.exists():
         return jsonify([])
     
+    directories = ['data']  # Include root data directory
+    
+    def scan_directories(path):
+        for item in path.iterdir():
+            if item.is_dir():
+                rel_path = str(item.relative_to(Path('.')))
+                directories.append(rel_path)
+                scan_directories(item)
+    
+    scan_directories(data_dir)
+    return jsonify(sorted(directories))
+
+@app.route('/api/files')
+def get_files():
+    """Get list of parquet files in specified directory"""
+    dir_path = request.args.get('dir', 'data')
+    target_dir = Path(dir_path)
+    
+    if not target_dir.exists():
+        return jsonify([])
+    
     parquet_files = []
-    for file in data_dir.glob('*.parquet'):
+    for file in target_dir.glob('*.parquet'):
         parquet_files.append(str(file))
     
-    return jsonify(parquet_files)
+    return jsonify(sorted(parquet_files))
 
 @app.route('/api/data')
 def get_data():

@@ -7,7 +7,7 @@ Loads model once and serves inference requests via HTTP API
 import os
 
 # Set GPUs 4,5 for multi-GPU inference
-os.environ["CUDA_VISIBLE_DEVICES"] = "4,5"
+os.environ["CUDA_VISIBLE_DEVICES"] = "4"
 
 import torch
 import base64
@@ -18,6 +18,7 @@ from PIL import Image
 from flask import Flask, request, jsonify, Response
 from transformers import Qwen2_5OmniForConditionalGeneration, Qwen2_5OmniProcessor, Qwen2_5OmniThinkerForConditionalGeneration
 from qwen_omni_utils import process_mm_info
+import hashlib
 
 
 
@@ -26,6 +27,216 @@ app = Flask(__name__)
 # Global variables for model and processor
 model = None
 processor = None
+
+# Directory for caching images saved from base64 or PIL objects
+# By default, use the path that is already served by the user's static file server
+# so that images can be accessed via http://127.0.0.1:10017/<relative_path>
+IMAGE_CACHE_DIR = os.environ.get('IMAGE_CACHE_DIR', '/mnt/data3/nlp/ws/data')
+IMAGE_CACHE_SUBDIR = os.environ.get('IMAGE_CACHE_SUBDIR', 'ai_cache')
+IMAGE_HTTP_BASE = os.environ.get('IMAGE_HTTP_BASE', 'http://127.0.0.1:10017')
+
+_CACHE_DIR_FULL = os.path.join(IMAGE_CACHE_DIR, IMAGE_CACHE_SUBDIR)
+os.makedirs(_CACHE_DIR_FULL, exist_ok=True)
+
+def _save_image_bytes(image_bytes: bytes, ext: str = 'jpg') -> str:
+    """Save image bytes to cache dir and return HTTP URL if IMAGE_HTTP_BASE is set, else file:// URL."""
+    try:
+        img_hash = hashlib.md5(image_bytes).hexdigest()
+        filename = f"{img_hash}.{ext}"
+        file_path = os.path.join(_CACHE_DIR_FULL, filename)
+        if not os.path.exists(file_path):
+            with open(file_path, 'wb') as f:
+                f.write(image_bytes)
+        # Construct HTTP URL if base is configured
+        if IMAGE_HTTP_BASE:
+            rel_path = os.path.relpath(file_path, IMAGE_CACHE_DIR).replace(os.sep, '/')
+            return f"{IMAGE_HTTP_BASE.rstrip('/')}/{rel_path}"
+        return f"file://{file_path}"
+    except Exception as e:
+        print(f"⚠️ Failed to save image bytes: {e}")
+        raise
+
+def ensure_image_urls(conversation: list[dict]) -> list[dict]:
+    """
+    Ensure all user image entries are OpenAI-style and HTTP URL based before apply_chat_template.
+    Output items will be of the form:
+      {"type": "image_url", "image_url": {"url": "http://127.0.0.1:10017/..."}}
+    Accepts PIL.Image objects, base64 strings, dicts with data/url, file paths, or file:// URLs.
+    """
+    processed = []
+    for msg in conversation:
+        msg_copy = msg.copy()
+        if msg_copy.get("role") == "user" and "content" in msg_copy:
+            new_content = []
+            for item in msg_copy["content"]:
+                # Normalize legacy {type:"image", image: ...} and keep text as-is
+                if item.get("type") in ("image", "image_url"):
+                    image_ref = item.get("image") if item.get("type") == "image" else (item.get("image_url", {}) or {}).get("url")
+                    # Already a usable URL or path
+                    if isinstance(image_ref, str):
+                        if image_ref.startswith("http://") or image_ref.startswith("https://") or image_ref.startswith("file://"):
+                            # Map file:// under IMAGE_CACHE_DIR to HTTP
+                            url_val = image_ref
+                            if image_ref.startswith("file://"):
+                                local_path = image_ref[7:]
+                                try:
+                                    if os.path.abspath(local_path).startswith(os.path.abspath(IMAGE_CACHE_DIR)) and IMAGE_HTTP_BASE:
+                                        rel_path = os.path.relpath(local_path, IMAGE_CACHE_DIR).replace(os.sep, '/')
+                                        url_val = f"{IMAGE_HTTP_BASE.rstrip('/')}/{rel_path}"
+                                except Exception:
+                                    pass
+                            new_content.append({"type": "image_url", "image_url": {"url": url_val}})
+                            continue
+                        # If it's a local absolute path, convert to HTTP URL if under IMAGE_CACHE_DIR
+                        if os.path.isabs(image_ref) and os.path.exists(image_ref):
+                            abs_path = os.path.abspath(image_ref)
+                            if abs_path.startswith(os.path.abspath(IMAGE_CACHE_DIR)) and IMAGE_HTTP_BASE:
+                                rel_path = os.path.relpath(abs_path, IMAGE_CACHE_DIR).replace(os.sep, '/')
+                                url_val = f"{IMAGE_HTTP_BASE.rstrip('/')}/{rel_path}"
+                            else:
+                                # Copy into cache dir and return HTTP URL
+                                try:
+                                    with open(abs_path, 'rb') as rf:
+                                        data = rf.read()
+                                    url_val = _save_image_bytes(data)
+                                except Exception:
+                                    url_val = f"file://{abs_path}"
+                            new_content.append({"type": "image_url", "image_url": {"url": url_val}})
+                            continue
+                        # Possibly data URL or pure base64
+                        try:
+                            data_str = image_ref
+                            if data_str.startswith("data:image"):
+                                data_str = data_str.split(",", 1)[1]
+                            img_bytes = base64.b64decode(data_str)
+                            url = _save_image_bytes(img_bytes)
+                            new_content.append({"type": "image_url", "image_url": {"url": url}})
+                            continue
+                        except Exception:
+                            pass
+                    # PIL Image object
+                    if hasattr(image_ref, "save") and hasattr(image_ref, "mode"):
+                        buf = BytesIO()
+                        try:
+                            image_ref.save(buf, format="JPEG")
+                        except Exception:
+                            # Fallback to PNG
+                            buf = BytesIO()
+                            image_ref.save(buf, format="PNG")
+                            url = _save_image_bytes(buf.getvalue(), ext='png')
+                        else:
+                            url = _save_image_bytes(buf.getvalue(), ext='jpg')
+                        new_content.append({"type": "image_url", "image_url": {"url": url}})
+                    # dict formats
+                    elif isinstance(image_ref, dict):
+                        if "url" in image_ref and isinstance(image_ref["url"], str):
+                            val = image_ref["url"]
+                            # if data url, decode and save
+                            if val.startswith("data:image"):
+                                try:
+                                    img_bytes = base64.b64decode(val.split(",", 1)[1])
+                                    url = _save_image_bytes(img_bytes)
+                                    val = url
+                                except Exception:
+                                    pass
+                            new_content.append({"type": "image_url", "image_url": {"url": val}})
+                        elif "data" in image_ref and isinstance(image_ref["data"], str):
+                            try:
+                                img_bytes = base64.b64decode(image_ref["data"])
+                                url = _save_image_bytes(img_bytes)
+                                new_content.append({"type": "image_url", "image_url": {"url": url}})
+                            except Exception:
+                                new_content.append(item)
+                        else:
+                            new_content.append(item)
+                else:
+                    new_content.append(item)
+            msg_copy["content"] = new_content
+        processed.append(msg_copy)
+    return processed
+
+def convert_for_template(conversation: list[dict]) -> list[dict]:
+    """Convert OpenAI-style image_url to Qwen-compatible {type:"image", image:<url>} for chat template.
+    Does not alter non-image content.
+    """
+    out = []
+    for msg in conversation:
+        mc = msg.copy()
+        if mc.get('role') == 'user' and 'content' in mc:
+            new_c = []
+            for it in mc['content']:
+                if it.get('type') == 'image_url' and isinstance(it.get('image_url', {}), dict):
+                    url = it['image_url'].get('url')
+                    if isinstance(url, str):
+                        new_c.append({'type': 'image', 'image': url})
+                    else:
+                        new_c.append(it)
+                else:
+                    new_c.append(it)
+            mc['content'] = new_c
+        out.append(mc)
+    return out
+
+def gather_mm_info(conversation: list[dict]):
+    """Wrapper to obtain audios, images, videos for the processor.
+    Tries qwen's process_mm_info; if it returns empty images and the conversation uses
+    OpenAI-style image_url, we parse them and open local files mapped from HTTP URLs.
+    """
+    try:
+        audios, images, videos = process_mm_info(conversation, use_audio_in_video=False)
+    except Exception:
+        audios, images, videos = None, None, None
+
+    if images:
+        return audios, images, videos
+
+    # Fallback: parse image_url entries
+    imgs = []
+    for msg in conversation:
+        if msg.get('role') == 'user' and 'content' in msg:
+            for item in msg['content']:
+                if item.get('type') == 'image_url' and isinstance(item.get('image_url', {}), dict):
+                    url = item['image_url'].get('url')
+                    if not isinstance(url, str):
+                        continue
+                    # Map HTTP back to local path under IMAGE_CACHE_DIR
+                    local_path = None
+                    if IMAGE_HTTP_BASE and url.startswith(IMAGE_HTTP_BASE.rstrip('/') + '/'):
+                        rel = url[len(IMAGE_HTTP_BASE.rstrip('/') + '/'):]
+                        local_path = os.path.join(IMAGE_CACHE_DIR, rel)
+                    elif url.startswith('file://'):
+                        local_path = url[7:]
+                    if local_path and os.path.exists(local_path):
+                        try:
+                            imgs.append(Image.open(local_path))
+                        except Exception:
+                            pass
+    return None, imgs if imgs else None, None
+
+def _debug_log_image_entries(tag: str, conversation: list[dict]):
+    """Print image entry types for debugging if DEBUG_IMAGE_URLS=1."""
+    if os.environ.get('DEBUG_IMAGE_URLS') != '1':
+        return
+    try:
+        summary = []
+        for mi, msg in enumerate(conversation):
+            if msg.get('role') == 'user' and 'content' in msg:
+                for ci, item in enumerate(msg['content']):
+                    if item.get('type') == 'image':
+                        ref = item.get('image')
+                    elif item.get('type') == 'image_url':
+                        ref = (item.get('image_url') or {}).get('url')
+                    else:
+                        continue
+                    ref_type = type(ref).__name__
+                    sample = ref[:60] + '...' if isinstance(ref, str) and len(ref) > 60 else ref
+                    if isinstance(sample, str):
+                        # Avoid printing full base64 strings
+                        sample = sample.replace('\n', '')
+                    summary.append({'msg_idx': mi, 'content_idx': ci, 'type': ref_type, 'value': str(sample)})
+        print(f"🔎 [{tag}] Image entries: {json.dumps(summary, ensure_ascii=False)}")
+    except Exception as e:
+        print(f"⚠️ Debug logging failed: {e}")
 
 def load_model():
     """Load model and processor once at startup"""
@@ -43,7 +254,10 @@ def load_model():
         trust_remote_code=True,
         low_cpu_mem_usage=True,
         attn_implementation="flash_attention_2",
-        max_memory={0: "70GB", 1: "70GB"}  # Limit memory per GPU to avoid OOM
+        max_memory={
+            0: "30GB",
+            # 1: "70GB"
+        }  # Limit memory per GPU to avoid OOM
     )
     
     # Enable optimizations
@@ -88,13 +302,19 @@ def inference_streaming(conversation):
     
     # Preprocessing time - use official format
     prep_start = time.time()
-    
-    # Apply chat template
-    text = processor.apply_chat_template(conversation, add_generation_prompt=True, tokenize=False)
+
+    # Ensure images are URLs before applying chat template
+    _debug_log_image_entries('BEFORE ensure_image_urls (stream)', conversation)
+    conversation = ensure_image_urls(conversation)
+    _debug_log_image_entries('AFTER ensure_image_urls (stream)', conversation)
+
+    # Apply chat template (convert OpenAI-style to Qwen-style)
+    conv_for_template = convert_for_template(conversation)
+    text = processor.apply_chat_template(conv_for_template, add_generation_prompt=True, tokenize=False)
     print(f"📝 Generated text: {text[:200]}{'...' if len(text) > 200 else ''}")
     
-    # Process multimedia info
-    audios, images, videos = process_mm_info(conversation, use_audio_in_video=False)
+    # Process multimedia info (support image_url style)
+    audios, images, videos = gather_mm_info(conversation)
     
     # Prepare inputs
     inputs = processor(
@@ -203,12 +423,18 @@ def inference(conversation):
     # Preprocessing time - use official format
     prep_start = time.time()
     
-    # Apply chat template
-    text = processor.apply_chat_template(conversation, add_generation_prompt=True, tokenize=False)
+    # Ensure images are URLs (OpenAI-style image_url) before applying chat template
+    _debug_log_image_entries('BEFORE ensure_image_urls', conversation)
+    conversation = ensure_image_urls(conversation)
+    _debug_log_image_entries('AFTER ensure_image_urls', conversation)
+    
+    # Apply chat template (convert OpenAI-style to Qwen-style)
+    conv_for_template = convert_for_template(conversation)
+    text = processor.apply_chat_template(conv_for_template, add_generation_prompt=True, tokenize=False)
     print(f"📝 Generated text: {text[:200]}{'...' if len(text) > 200 else ''}")
     
-    # Process multimedia info
-    audios, images, videos = process_mm_info(conversation, use_audio_in_video=False)
+    # Process multimedia info (support image_url style)
+    audios, images, videos = gather_mm_info(conversation)
     
     # Prepare inputs
     inputs = processor(
@@ -237,9 +463,9 @@ def inference(conversation):
     with torch.no_grad(), torch.cuda.amp.autocast():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=64,  # Reduce from 128 to 64 for faster generation
+            max_new_tokens=1024,  # Reduce from 128 to 64 for faster generation
             do_sample=True,
-            temperature=0.8,  # Lower temperature for more focused generation
+            temperature=1,  # Lower temperature for more focused generation
             top_p=0.8,  # Slightly lower top_p
             repetition_penalty=1.05,  # Reduce repetition penalty
             early_stopping=True,
@@ -421,25 +647,35 @@ def inference_endpoint():
                 for content_item in message["content"]:
                     if content_item.get("type") == "image":
                         image_ref = content_item.get("image")
-                        if isinstance(image_ref, str):
-                            # Handle file URL
-                            try:
-                                file_path = image_ref
-                                # file_path = image_ref[7:]  # Remove "file://" prefix
-                                image_data = Image.open(file_path)
-                                processed_content.append({"type": "image", "image": image_data})
-                            except Exception as e:
-                                return jsonify({'error': f'Failed to load image from URL {image_ref}: {str(e)}'}), 400
+                        
+                        # Check if it's already a PIL Image object (including JpegImagePlugin)
+                        if hasattr(image_ref, 'mode') and hasattr(image_ref, 'size'):
+                            # It's already a PIL Image object, use it directly
+                            processed_content.append({"type": "image", "image": image_ref})
                         elif isinstance(image_ref, str):
-                            # Handle base64 encoded image
-                            try:
-                                image_bytes = base64.b64decode(image_ref)
-                                image_data = Image.open(BytesIO(image_bytes))
-                                processed_content.append({"type": "image", "image": image_data})
-                            except Exception as e:
-                                return jsonify({'error': f'Invalid image data: {str(e)}'}), 400
+                            # Handle file URL or base64
+                            if image_ref.startswith('data:image') or len(image_ref) > 100:
+                                # Handle base64 encoded image
+                                try:
+                                    if image_ref.startswith('data:image'):
+                                        image_ref = image_ref.split(',')[1]
+                                    image_bytes = base64.b64decode(image_ref)
+                                    image_data = Image.open(BytesIO(image_bytes))
+                                    processed_content.append({"type": "image", "image": image_data})
+                                except Exception as e:
+                                    return jsonify({'error': f'Invalid base64 image data: {str(e)}'}), 400
+                            else:
+                                # Handle file URL/path
+                                try:
+                                    file_path = image_ref
+                                    if image_ref.startswith('file://'):
+                                        file_path = image_ref[7:]
+                                    image_data = Image.open(file_path)
+                                    processed_content.append({"type": "image", "image": image_data})
+                                except Exception as e:
+                                    return jsonify({'error': f'Failed to load image from URL {image_ref}: {str(e)}'}), 400
                         else:
-                            # Already processed image object
+                            # Unknown format, try to handle as is
                             processed_content.append(content_item)
                     else:
                         processed_content.append(content_item)

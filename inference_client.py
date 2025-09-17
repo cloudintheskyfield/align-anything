@@ -350,7 +350,7 @@ class InferenceClient:
             "messages": judge_messages,
             "model": "/mnt/data3/nlp/ws/model/llama_4_maverick",
             "temperature": 0.1,
-            "max_tokens": 300,
+            "max_tokens": 1024,
             "top_p": 0.5,
             "stream": False,
             "top_k": 1,
@@ -700,8 +700,15 @@ def run_no_persona_tests():
     
     return assessment_data
 
-def save_assessment_results(persona_data, no_persona_data):
-    """Save assessment results to parquet file"""
+def save_assessment_results(persona_data, no_persona_data, output_path: str | None = None):
+    """Save assessment results to parquet file
+    Args:
+        persona_data: list of dicts
+        no_persona_data: list of dicts
+        output_path: optional custom output file path or directory. If a directory,
+            a timestamped filename will be generated inside it.
+            If None, defaults to data/assessment_<timestamp>.parquet
+    """
     # 合并两组数据
     all_data = persona_data + no_persona_data
     
@@ -712,12 +719,19 @@ def save_assessment_results(persona_data, no_persona_data):
     # 创建DataFrame
     df = pd.DataFrame(all_data)
     
-    # 确保data目录存在
+    # 确保输出目录存在并确定输出文件名
     data_dir = Path("data")
     data_dir.mkdir(exist_ok=True)
-    
-    # 保存到parquet文件
-    output_file = data_dir / "assessment.parquet"
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if output_path:
+        output_file = Path(output_path)
+        if output_file.is_dir() or str(output_file).endswith(("/", "\\")):
+            output_file = output_file / f"assessment_{ts}.parquet"
+        else:
+            # ensure parent exists
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        output_file = data_dir / f"assessment_{ts}.parquet"
     try:
         df.to_parquet(output_file, index=False, engine='pyarrow')
         print(f"✅ Parquet文件保存成功")
@@ -806,15 +820,18 @@ def save_assessment_results(persona_data, no_persona_data):
         }
     }
     
-    # 保存数据字典到JSON
-    dict_file = data_dir / "assessment_metadata.json"
+    # 保存数据字典到JSON（同目录，按输出文件名派生）
+    dict_file = output_file.with_name(output_file.stem + "_metadata.json")
     with open(dict_file, 'w', encoding='utf-8') as f:
         json.dump(data_dict, f, ensure_ascii=False, indent=2)
     
     print(f"\n📋 数据字典已保存到: {dict_file}")
 
-def run_complete_assessment():
-    """Run complete assessment with both persona and no-persona tests"""
+def run_complete_assessment(output_path: str | None = None):
+    """Run complete assessment with both persona and no-persona tests
+    Args:
+        output_path: optional parquet output file path or directory.
+    """
     print("🚀 开始完整评估测试...")
     
     # 运行有人设测试
@@ -848,12 +865,15 @@ def run_complete_assessment():
             print("\033[0m")
     
     # 保存结果
-    save_assessment_results(persona_data, no_persona_data)
+    save_assessment_results(persona_data, no_persona_data, output_path)
     
     return persona_data, no_persona_data
 
-def run_image_test():
-    """Run image test with multimodal questions"""
+def run_image_test(output_path: str | None = None):
+    """Run image test with multimodal questions
+    Args:
+        output_path: optional parquet output file path or directory.
+    """
     print("🖼️  开始图像多模态测试...")
     
     # 图像测试问题
@@ -992,11 +1012,15 @@ def run_image_test():
                 continue
     
     # 保存图像测试结果
-    save_image_assessment_data(all_data)
+    save_image_assessment_data(all_data, output_path)
     return all_data
 
-def save_image_assessment_data(all_data):
-    """Save image assessment data to parquet file"""
+def save_image_assessment_data(all_data, output_path: str | None = None):
+    """Save image assessment data to parquet file
+    Args:
+        all_data: list of dicts
+        output_path: optional parquet output file path or directory.
+    """
     if not all_data:
         print("❌ 没有数据可保存")
         return
@@ -1004,12 +1028,18 @@ def save_image_assessment_data(all_data):
     # 创建DataFrame
     df = pd.DataFrame(all_data)
     
-    # 确保data目录存在
+    # 确保输出目录存在并确定输出文件名
     data_dir = Path("data")
     data_dir.mkdir(exist_ok=True)
-    
-    # 保存到parquet文件
-    output_file = data_dir / "image_assessment.parquet"
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if output_path:
+        output_file = Path(output_path)
+        if output_file.is_dir() or str(output_file).endswith(("/", "\\")):
+            output_file = output_file / f"image_assessment_{ts}.parquet"
+        else:
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        output_file = data_dir / f"image_assessment_{ts}.parquet"
     try:
         df.to_parquet(output_file, index=False, engine='pyarrow')
         print(f"✅ 图像评估Parquet文件保存成功")
@@ -1090,8 +1120,8 @@ def save_image_assessment_data(all_data):
         }
     }
     
-    # 保存数据字典到JSON
-    dict_file = data_dir / "image_assessment_metadata.json"
+    # 保存数据字典到JSON（同目录，按输出文件名派生）
+    dict_file = output_file.with_name(output_file.stem + "_metadata.json")
     with open(dict_file, 'w', encoding='utf-8') as f:
         json.dump(data_dict, f, ensure_ascii=False, indent=2)
     
@@ -1109,7 +1139,12 @@ def main():
     parser.add_argument("--image", help="Path to image file (optional)")
     parser.add_argument("--check-health", action="store_true", help="Check server health")
     parser.add_argument("--test", action="store_true", help="Run test questions")
-    parser.add_argument("--assessment", action="store_true", help="Run complete assessment and save to parquet")
+    parser.add_argument("--assessment", action="store_false", help="Run complete assessment and save to parquet")
+    parser.add_argument("--assessment-output",
+                        dest="assessment_output",
+                        default='./data/origin_qwen.parquet',
+                        help="Parquet output path or directory for assessment results")
+    parser.add_argument("--image-output", dest="image_output", default=None, help="Parquet output path or directory for image assessment results")
     parser.add_argument("--image-test", action="store_false", help="Run image test with multimodal questions")
     
     args = parser.parse_args()
@@ -1118,13 +1153,13 @@ def main():
     client = InferenceClient(args.server)
     
     if args.assessment:
-        run_complete_assessment()
+        run_complete_assessment(args.assessment_output)
         return
     elif args.test:
         run_test_questions()
         return
     elif getattr(args, 'image_test', False):
-        run_image_test()
+        run_image_test(args.image_output)
         return
     
     # Health check if requested

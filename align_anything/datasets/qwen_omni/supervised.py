@@ -79,7 +79,7 @@ class SupervisedDataset(Dataset):
             path,
             name=name if name and name != 'None' else None,
             split=split if split and split != 'None' else None,
-            data_files=data_files if data_files and data_files != 'None' else None,
+            data_files=data_files.split(' ') if data_files and data_files != 'None' else None,
             *optional_args,
             trust_remote_code=True,
             num_proc=16,

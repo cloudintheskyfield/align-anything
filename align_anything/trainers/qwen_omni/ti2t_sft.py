@@ -18,7 +18,7 @@
 import argparse
 import os
 
-os.environ.setdefault('CUDA_VISIBLE_DEVICES', '4,5')
+os.environ.setdefault('CUDA_VISIBLE_DEVICES', '4')
 
 import sys
 
