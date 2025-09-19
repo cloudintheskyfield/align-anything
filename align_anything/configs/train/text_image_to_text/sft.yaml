@@ -78,7 +78,7 @@ data_cfgs:
   # The name of training datasets
   train_name: null
   # The training data files to be used
-  train_data_files: "../data/target_dataset/*"
+  train_data_files: "../data/target_dataset/*.parquet"
 #  train_data_files: '../../../data/train-00000-of-00013.parquet'
   # The optional arguments for loading training datasets
   train_optional_args: []
@@ -116,7 +116,7 @@ logger_cfgs:
 # The model configurations
 model_cfgs:
   # Pretrained model name or path
-  model_name_or_path: /mnt/data3/nlp/ws/model/Qwen2/Qwen/Qwen2.5-Omni-7B
+  model_name_or_path: /mnt/data3/nlp/ws/model/Qwen2
   # Whether to trust remote code
   trust_remote_code: True
   # The max token length
