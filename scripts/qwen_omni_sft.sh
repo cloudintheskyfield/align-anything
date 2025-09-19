@@ -30,14 +30,14 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # For wandb online logging
 export WANDB_API_KEY=""
-# Set GPU devices to use only GPU 4 and 5
-export CUDA_VISIBLE_DEVICES=4
+# Set GPU devices to use GPUs 0,1,2,3
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 # Source the setup script
 source ./setup.sh
 
 # Execute deepspeed command
 deepspeed \
-     --include localhost:4 \
+     --include localhost:0,1,2,3 \
      --master_port ${MASTER_PORT} \
      --module align_anything.trainers.qwen_omni.ti2t_sft \
      --model_name_or_path ${MODEL_NAME_OR_PATH} \

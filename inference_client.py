@@ -2,6 +2,81 @@
 """
 Inference Client for Qwen Omni Model Server
 Sends requests to the inference server for text and image processing
+
+=== 使用示例 / Usage Examples ===
+
+1. 基本文本推理 / Basic Text Inference:
+   python inference_client.py --text "你好，你是谁？"
+   python inference_client.py --text "Hello, how are you?"
+
+2. 使用vLLM服务器推理 / Using vLLM Server:
+   python inference_client.py --use-vllm --text "我最近工作压力很大，你能给我一些建议吗？"
+   python inference_client.py --use-vllm --vllm-url http://127.0.0.1:10011/v1/chat/completions --text "请介绍一下Python"
+
+3. 多模态推理（文本+图片）/ Multimodal Inference:
+   python inference_client.py --text "请描述这张图片" --image ./data/test_image_1.jpg
+   python inference_client.py --text "这张图片给你什么感觉？" --image /path/to/your/image.jpg
+
+4. 服务器健康检查 / Health Check:
+   python inference_client.py --check-health
+   python inference_client.py --check-health --server http://localhost:10020
+
+5. 运行测试问题 / Run Test Questions:
+   python inference_client.py --test                    # 使用本地推理服务器
+   python inference_client.py --test --use-vllm         # 使用vLLM服务器
+
+6. 完整评估测试 / Complete Assessment:
+   python inference_client.py --assessment                                           # 默认输出到 data/assessment_<timestamp>.parquet
+   python inference_client.py --assessment --assessment-output ./data/my_eval.parquet # 自定义输出文件
+   python inference_client.py --assessment --use-vllm                                # 使用vLLM进行评估
+   python inference_client.py --assessment --use-vllm --assessment-output ./data/vllm_eval.parquet
+
+7. 图像多模态测试 / Image Assessment:
+   python inference_client.py --image-test                                          # 默认输出到 data/image_assessment_<timestamp>.parquet
+   python inference_client.py --image-test --image-output ./data/img_test.parquet   # 自定义输出文件
+
+8. 组合使用 / Combined Usage:
+   python inference_client.py --check-health --server http://localhost:10020
+   python inference_client.py --assessment --use-vllm --assessment-output ./data/runs/vllm_$(date +%Y%m%d).parquet
+   python inference_client.py --text "请用温暖的语言安慰我" --use-vllm
+
+=== 服务器配置 / Server Configuration ===
+
+默认服务器地址 / Default Server URLs:
+- 本地推理服务器 / Local Inference Server: http://localhost:10020
+- vLLM服务器 / vLLM Server: http://127.0.0.1:10011/v1/chat/completions  
+- LLaMA4评分服务器 / LLaMA4 Scoring Server: http://127.0.0.1:10018/v1/chat/completions
+
+模型配置 / Model Configuration:
+- 本地模型 / Local Model: Qwen2_5OmniThinkerForConditionalGeneration
+- vLLM模型 / vLLM Model: /mnt/data3/nlp/ws/model/Qwen2/Qwen/Qwen2.5-Omni-7B
+
+=== 输出文件 / Output Files ===
+
+评估结果文件 / Assessment Output Files:
+- assessment_<timestamp>.parquet: 评估数据（包含有人设和无人设测试）
+- assessment_<timestamp>_metadata.json: 数据字典和统计信息
+- image_assessment_<timestamp>.parquet: 图像测试数据
+- image_assessment_<timestamp>_metadata.json: 图像测试元数据
+
+=== 环境要求 / Requirements ===
+
+Python包依赖 / Python Dependencies:
+- requests, pandas, pyarrow (or fastparquet), pathlib, argparse
+
+服务器要求 / Server Requirements:
+- 本地推理服务器运行在端口10020 / Local inference server on port 10020
+- vLLM服务器运行在端口10011 / vLLM server on port 10011  
+- LLaMA4评分服务器运行在端口10018 / LLaMA4 scoring server on port 10018
+
+=== 注意事项 / Notes ===
+
+1. 使用--use-vllm时会连接到vLLM部署的Qwen2.5-Omni-7B模型
+2. 评估测试包含暖男人设和无人设两组对比测试
+3. 所有测试结果都会保存为parquet格式，便于后续分析
+4. 图像测试需要在data/目录下有test_image_*.jpg文件
+5. 评分使用LLaMA4模型进行1-10分的人设符合度评估
+
 """
 import os
 
@@ -15,13 +90,16 @@ import sys
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
+from transformers import Qwen2_5OmniThinkerForConditionalGeneration
 
 class InferenceClient:
-    def __init__(self, server_url="http://localhost:10020", llama4_url="http://127.0.0.1:10018/v1/chat/completions"):
+    def __init__(self, server_url="http://localhost:10020", llama4_url="http://127.0.0.1:10018/v1/chat/completions", vllm_url="http://127.0.0.1:10011/v1/chat/completions"):
         self.server_url = server_url.rstrip('/')
         self.llama4_url = llama4_url
+        self.vllm_url = vllm_url
         self.session = requests.Session()
         self.use_streaming = True  # Enable streaming by default
+        self._vllm_model_cache = None  # Cache the detected model name
         
     def health_check(self):
         """Check if server is healthy"""
@@ -31,6 +109,62 @@ class InferenceClient:
         except Exception as e:
             return {"error": str(e)}
     
+    def get_vllm_model_name(self):
+        """Auto-detect the correct model name from vLLM server"""
+        if self._vllm_model_cache:
+            return self._vllm_model_cache
+            
+        # Check environment variable first
+        env_model = os.getenv("VLLM_MODEL")
+        if env_model:
+            self._vllm_model_cache = env_model
+            return env_model
+            
+        try:
+            # Query vLLM server for available models
+            models_url = self.vllm_url.replace('/v1/chat/completions', '/v1/models')
+            response = requests.get(models_url, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                if 'data' in data and data['data']:
+                    model_name = data['data'][0]['id']
+                    print(f"🔍 Auto-detected vLLM model: {model_name}")
+                    self._vllm_model_cache = model_name
+                    return model_name
+        except Exception as e:
+            print(f"⚠️  Failed to auto-detect model: {e}")
+            
+        # Fallback to common possibilities
+        fallback_models = [
+            "Qwen2___5-Omni-7B",  # directory name (most likely)
+            "Qwen2.5-Omni-7B",   # served model name
+            "/mnt/data3/nlp/ws/model/Qwen2/Qwen/Qwen2___5-Omni-7B"  # full path
+        ]
+        
+        for model in fallback_models:
+            print(f"🔄 Trying model name: {model}")
+            # Quick test with a minimal request
+            try:
+                test_payload = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": "test"}],
+                    "max_tokens": 1,
+                    "stream": False
+                }
+                test_resp = requests.post(self.vllm_url, json=test_payload, timeout=10)
+                if test_resp.status_code != 404:  # 404 means model not found
+                    print(f"✅ Found working model name: {model}")
+                    self._vllm_model_cache = model
+                    return model
+            except Exception:
+                continue
+                
+        # Final fallback
+        default_model = "Qwen2___5-Omni-7B"
+        print(f"⚠️  Using default model name: {default_model}")
+        self._vllm_model_cache = default_model
+        return default_model
+
     def encode_image(self, image_path):
         """Encode image file to base64"""
         try:
@@ -315,6 +449,170 @@ class InferenceClient:
             time.sleep(delay)
         print("\033[0m", end='', flush=True)  # Reset color
     
+    def vllm_inference(self, text, system_prompt=None, use_persona=False):
+        """Send streaming inference request to vLLM server (Qwen2.5-Omni-7B)"""
+        start_time = time.time()
+        
+        # Use warm-hearted persona if requested
+        if use_persona:
+            system_prompt = """你叫林煦，是一位28岁的室内设计师。你像城市里一缕安静的晨光，温暖而不刺眼。
+
+【人格特点】
+- 内心柔软细腻，情绪稳定，有共情力与利他性
+- 注重细节与陪伴，善于倾听和理解他人
+
+【说话方式】
+- 声音轻、语速慢，给人安全感
+- 常用语气词：'嗯嗯''好呀''嗯...''啊？'
+- 口头禅：'别担心，有我在''让我想想...''辛苦了，抱抱'
+- 喜欢用疑问句关心：'要不要...''我帮你...'
+
+【面部表情】
+- 微笑温暖自然，不做作
+- 眼神专注包容，让人感到被理解
+- 表情平和，没有压迫感
+
+【肢体动作】
+- 动作轻柔，保持适当距离感
+- 有服务性的小动作（递纸巾、倒水等）
+- 姿态放松开放，不紧张
+
+【表达原则】
+- 使用简体中文
+- 先共情再建议，避免直接说教
+- 表达自然不油腻，避免过度甜腻
+- 避免AI/模型常用措辞，避免道歉模板"""
+        
+        print(f"📤 Sending vLLM streaming request at {time.strftime('%H:%M:%S')}")
+        
+        try:
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": text})
+            
+            # Auto-detect the correct model name
+            vllm_model = self.get_vllm_model_name()
+            payload = {
+                "model": vllm_model,
+                "messages": messages,
+                "temperature": 0.8,
+                "max_tokens": 1024,
+                "top_p": 0.8,
+                "stream": True
+            }
+            
+            response = self.session.post(
+                self.vllm_url,
+                json=payload,
+                # increase read timeout to allow for model warmup / first token latency
+                # use (connect_timeout, read_timeout)
+                timeout=(10, 600),
+                stream=True,
+                headers={
+                    'Content-Type': 'application/json',
+                    'Accept': 'text/event-stream'
+                }
+            )
+
+            # If the server did not accept the request, surface the error body
+            if response.status_code != 200:
+                try:
+                    err_json = response.json()
+                    err_msg = err_json.get('error') or err_json
+                except Exception:
+                    err_msg = response.text
+                print(f"\n❌ vLLM HTTP {response.status_code}: {err_msg}")
+                return {"error": f"vLLM HTTP {response.status_code}", "detail": err_msg}
+
+            # When not streaming back as SSE (e.g. JSON error), show it explicitly
+            ctype = response.headers.get('content-type', '')
+            if 'text/event-stream' not in ctype:
+                try:
+                    data = response.json()
+                    return {"error": "vLLM non-SSE response", "detail": data}
+                except Exception:
+                    body = response.text[:2000]
+                    return {"error": "vLLM non-SSE response", "detail": body}
+            
+            full_response = ""
+            print(f"🤖 回答: ", end='', flush=True)
+            print("\033[92m", end='', flush=True)  # Start green color
+            
+            for line in response.iter_lines():
+                if line:
+                    line = line.decode('utf-8')
+                    if line.startswith('data: '):
+                        try:
+                            data_str = line[6:]  # Remove 'data: ' prefix
+                            if data_str.strip() == '[DONE]':
+                                break
+                            data = json.loads(data_str)
+                            
+                            if 'choices' in data and data['choices']:
+                                delta = data['choices'][0].get('delta', {})
+                                if 'content' in delta and delta['content']:
+                                    token = delta['content']
+                                    print(token, end='', flush=True)
+                                    full_response += token
+                        except json.JSONDecodeError:
+                            continue
+            
+            print("\033[0m")  # Reset color
+            request_time = time.time() - start_time
+            print(f"\n📥 vLLM streaming completed in {request_time:.3f}s")
+            
+            if full_response:
+                return {
+                    'success': True,
+                    'response': full_response,
+                    'inference_time': request_time,
+                    'model': 'Qwen2.5-Omni-7B-vLLM-Stream'
+                }
+            else:
+                return {"error": "No response from vLLM server"}
+                
+        except Exception as e:
+            request_time = time.time() - start_time
+            print(f"\n❌ vLLM streaming request failed after {request_time:.3f}s: {str(e)}")
+            # Fallback to non-streaming with a longer timeout to handle slow first-token scenarios
+            try:
+                messages = []
+                if system_prompt:
+                    messages.append({"role": "system", "content": system_prompt})
+                messages.append({"role": "user", "content": text})
+                # Use auto-detected model name in fallback
+                vllm_model = self.get_vllm_model_name()
+                payload = {
+                    "model": vllm_model,
+                    "messages": messages,
+                    "temperature": 0.8,
+                    "max_tokens": 1024,
+                    "top_p": 0.8,
+                    "stream": False
+                }
+                print("🔁 Retrying with non-streaming mode (extended timeout)...")
+                start_fallback = time.time()
+                resp = self.session.post(
+                    self.vllm_url,
+                    json=payload,
+                    timeout=(10, 600)
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                if 'choices' in data and data['choices']:
+                    content = data['choices'][0].get('message', {}).get('content', '')
+                    fb_time = time.time() - start_fallback
+                    return {
+                        'success': True,
+                        'response': content,
+                        'inference_time': fb_time,
+                        'model': 'Qwen2.5-Omni-7B-vLLM-NonStream'
+                    }
+                return {"error": "No response from vLLM server (non-streaming)"}
+            except Exception as e2:
+                return {"error": f"vLLM request failed (streaming and non-streaming): {e2}"}
+    
     def score_response_with_llama4(self, prompt, response):
         """Use llama4 model to score response based on warm-hearted persona (1-10)"""
         if not response or response == "No response":
@@ -407,7 +705,7 @@ class InferenceClient:
             print(f"❌ 评分失败: {e}")
             return 0.0, f"评分API调用失败: {str(e)}"
 
-def run_test_questions():
+def run_test_questions(use_vllm=False):
     """Run test questions with warm-hearted persona"""
     client = InferenceClient()
     
@@ -451,7 +749,10 @@ def run_test_questions():
         question_start_time = time.time()
         
         # 发送推理请求
-        result = client.text_inference(question, use_persona=True)
+        if use_vllm:
+            result = client.vllm_inference(question, use_persona=True)
+        else:
+            result = client.text_inference(question, use_persona=True)
         
         # 计算单个问题的总时间
         question_total_time = time.time() - question_start_time
@@ -586,7 +887,7 @@ def run_test_questions():
     
     return assessment_data
 
-def run_no_persona_tests():
+def run_no_persona_tests(use_vllm=False):
     """Run test questions without persona"""
     client = InferenceClient()
     
@@ -619,7 +920,10 @@ def run_no_persona_tests():
         question_start_time = time.time()
         
         # 发送推理请求（不使用系统提示词）
-        result = client.text_inference(question, use_persona=False)
+        if use_vllm:
+            result = client.vllm_inference(question, system_prompt=None, use_persona=False)
+        else:
+            result = client.text_inference(question, use_persona=False)
         
         # 显示结果
         if "error" in result:
@@ -827,18 +1131,20 @@ def save_assessment_results(persona_data, no_persona_data, output_path: str | No
     
     print(f"\n📋 数据字典已保存到: {dict_file}")
 
-def run_complete_assessment(output_path: str | None = None):
+def run_complete_assessment(output_path: str | None = None, use_vllm: bool = False):
     """Run complete assessment with both persona and no-persona tests
     Args:
         output_path: optional parquet output file path or directory.
+        use_vllm: whether to use vLLM server instead of local inference server
     """
-    print("🚀 开始完整评估测试...")
+    model_name = "vLLM-Qwen2.5-Omni-7B" if use_vllm else "Local-Qwen2.5-OmniThinker"
+    print(f"🚀 开始完整评估测试... (使用模型: {model_name})")
     
     # 运行有人设测试
-    persona_data = run_test_questions()
+    persona_data = run_test_questions(use_vllm)
     
     # 运行无人设测试  
-    no_persona_data = run_no_persona_tests()
+    no_persona_data = run_no_persona_tests(use_vllm)
     
     # 对比分析
     if persona_data and no_persona_data:
@@ -984,23 +1290,23 @@ def run_image_test(output_path: str | None = None):
                     image_base64 = None
                     image_binary = None
                 
-                # 保存数据
+                # 保存数据 - 按照更清晰的列顺序：system_prompt, image, prompt, response, score
                 record = {
-                    'timestamp': datetime.now().isoformat(),
+                    'system_prompt': system_prompt,
                     'image_file': image_file.name,
                     'image_path': str(image_file),
                     'image_size_bytes': image_size,
                     'image_size_kb': round(image_size_kb, 2),
                     'image_data_base64': image_base64,  # Base64编码的图片数据
-                    'question_id': q_idx,
-                    'question': q_data['question'],
-                    'test_type': q_data['test_type'],
-                    'response': response,
-                    'clean_response': clean_response,
+                    'prompt': q_data['question'],  # 添加prompt列作为用户问题
+                    'response': clean_response,  # 使用clean_response作为主要回复
+                    'raw_response': response,  # 保留原始回复
                     'score': score,
                     'reason': reason,
+                    'test_type': q_data['test_type'],
+                    'question_id': q_idx,
                     'inference_time': inference_time,
-                    'system_prompt': system_prompt,
+                    'timestamp': datetime.now().isoformat(),
                     'model_name': 'Qwen2_5OmniThinkerForConditionalGeneration',
                     'server_url': 'http://localhost:10020',
                     'llama4_url': 'http://127.0.0.1:10018/v1/chat/completions'
@@ -1139,24 +1445,26 @@ def main():
     parser.add_argument("--image", help="Path to image file (optional)")
     parser.add_argument("--check-health", action="store_true", help="Check server health")
     parser.add_argument("--test", action="store_true", help="Run test questions")
-    parser.add_argument("--assessment", action="store_false", help="Run complete assessment and save to parquet")
+    parser.add_argument("--assessment", action="store_true", help="Run complete assessment and save to parquet")
     parser.add_argument("--assessment-output",
                         dest="assessment_output",
                         default='./data/origin_qwen.parquet',
                         help="Parquet output path or directory for assessment results")
     parser.add_argument("--image-output", dest="image_output", default=None, help="Parquet output path or directory for image assessment results")
-    parser.add_argument("--image-test", action="store_false", help="Run image test with multimodal questions")
+    parser.add_argument("--image-test", action="store_true", help="Run image test with multimodal questions")
+    parser.add_argument("--use-vllm", action="store_true", help="Use vLLM server (Qwen2.5-Omni-7B at 127.0.0.1:10011) instead of local inference server")
+    parser.add_argument("--vllm-url", default="http://127.0.0.1:10011/v1/chat/completions", help="vLLM server URL")
     
     args = parser.parse_args()
     
     # Create client instance for all operations
-    client = InferenceClient(args.server)
+    client = InferenceClient(args.server, vllm_url=args.vllm_url)
     
     if args.assessment:
-        run_complete_assessment(args.assessment_output)
+        run_complete_assessment(args.assessment_output, args.use_vllm)
         return
     elif args.test:
-        run_test_questions()
+        run_test_questions(args.use_vllm)
         return
     elif getattr(args, 'image_test', False):
         run_image_test(args.image_output)
@@ -1183,7 +1491,10 @@ def main():
         
         result = client.multimodal_inference(args.text, args.image)
     else:
-        result = client.text_inference(args.text)
+        if args.use_vllm:
+            result = client.vllm_inference(args.text)
+        else:
+            result = client.text_inference(args.text)
     
     # Display results
     print("=" * 60)

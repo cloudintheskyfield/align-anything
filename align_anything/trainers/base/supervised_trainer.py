@@ -247,23 +247,23 @@ class SupervisedTrainerBase:
             self.cfgs.train_cfgs.weight_decay,
         )  # 需要权重衰减的参数：weights（权重矩阵） 不需要权重衰减的参数：偏置项（bias）和归一化层的权重 ---> 转为优化器创建
         # 尝试使用 FusedAdam，如果不可用则回退到标准 Adam
-        optimizer = DeepSpeedCPUAdam(
-            optimizer_grouped_parameters,
-            lr=self.cfgs.train_cfgs.learning_rate,
-            betas=self.cfgs.train_cfgs.adam_betas,
-            eps=self.cfgs.train_cfgs.adam_epsilon,
-        )
+        # optimizer = DeepSpeedCPUAdam(
+        #     optimizer_grouped_parameters,
+        #     lr=self.cfgs.train_cfgs.learning_rate,
+        #     betas=self.cfgs.train_cfgs.adam_betas,
+        #     eps=self.cfgs.train_cfgs.adam_epsilon,
+        # )
         # optimizer = torch.optim.Adam(
         #     optimizer_grouped_parameters,
         #     lr=self.cfgs.train_cfgs.learning_rate,
         #     betas=self.cfgs.train_cfgs.adam_betas,
         #     eps=self.cfgs.train_cfgs.adam_epsilon,
         # )
-        # optimizer = FusedAdam(  # FusedAdam 为 Adam 优化器的高性能版本，主要用于加速深度学习模型训练，
-        #     optimizer_grouped_parameters,
-        #     lr=self.cfgs.train_cfgs.learning_rate,
-        #     betas=self.cfgs.train_cfgs.adam_betas,
-        # )
+        optimizer = FusedAdam(  # FusedAdam 为 Adam 优化器的高性能版本，主要用于加速深度学习模型训练，
+            optimizer_grouped_parameters,
+            lr=self.cfgs.train_cfgs.learning_rate,
+            betas=self.cfgs.train_cfgs.adam_betas,
+        )
         # if FusedAdam is not None:
         #     try:
         #         optimizer = FusedAdam(  # FusedAdam 为 Adam 优化器的高性能版本，主要用于加速深度学习模型训练，
